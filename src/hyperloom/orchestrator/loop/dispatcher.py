@@ -30,6 +30,7 @@ from ..phases import machine_state as _phase_state
 from ..bus.message_bus import Message
 from ..kernel.request_handlers import get_handler
 from ..policy.gate import (
+    DELEGATE_ACTION_SOURCE_ALLOWLIST,
     INTEGRATE_PATCH_PERMISSIVE_VERDICTS,
     PolicyDenied,
     SPECIALIST_FROM_AGENT_PREFIX,
@@ -1660,7 +1661,16 @@ class DispatcherCollaborator:
     # InlineActionsCollaborator). ``_run_action_now_sync`` is the ``run_action_now``
     # context-tool bridge used by ConversationCollaborator.
     def _inline_action_whitelist(self) -> frozenset[str]:
-        """Derive the set of actions safe to run inline (A3): lane-light, registered executor, not in _INLINE_ACTION_DENY. PolicyGate remains the real security boundary.
+        """Derive the set of actions safe to run inline (A3): lane-light, registered executor, not in _INLINE_ACTION_DENY, not source-restricted away from orchestration. PolicyGate remains the real security boundary.
+
+        ``run_action_now`` is a context tool exposed to the orchestration
+        conversation only (``_run_action_now`` always validates as
+        ``role="orchestration"``), so any action whose
+        ``DELEGATE_ACTION_SOURCE_ALLOWLIST`` entry excludes "orchestration"
+        (e.g. ``recover``, robustness-only) can never actually run through
+        this path — PolicyGate correctly denies it every time. Filtering
+        those out here avoids repeatedly wasting a turn on a call that is
+        structurally guaranteed to fail.
 
         Returns:
             A frozenset of action names eligible for inline execution.
@@ -1672,6 +1682,9 @@ class DispatcherCollaborator:
             if name in self._INLINE_ACTION_DENY:
                 continue
             if name not in executors:
+                continue
+            allowed_sources = DELEGATE_ACTION_SOURCE_ALLOWLIST.get(name)
+            if allowed_sources is not None and "orchestration" not in allowed_sources:
                 continue
             lanes, _ttl = self._registry_lanes_ttl(name)
             if lanes:
