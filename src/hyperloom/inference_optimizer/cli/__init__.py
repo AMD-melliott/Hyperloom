@@ -3063,6 +3063,10 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run_optimize(args))
     if args.command == "recover-session":
         return _run_recover_session(args)
+    if args.command == "status":
+        from hyperloom.inference_optimizer.tools.status import run as _run_status
+
+        return _run_status(args)
     parser.print_help()
     return 2
 

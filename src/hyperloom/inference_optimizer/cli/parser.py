@@ -1399,6 +1399,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable R1 enforcement (warn-only). Useful for back-compat smoke tests; production should stay strict.",
     )
 
+    # Read-only status view. Flags are defined once in the operator tool and
+    # attached here so the two surfaces cannot drift.
+    from hyperloom.inference_optimizer.tools.status import add_status_arguments
+
+    add_status_arguments(
+        sub.add_parser(
+            "status",
+            help="Print the current phase, budget, and resource state of a session (read-only).",
+        )
+    )
+
     rec = sub.add_parser(
         "recover-session",
         help="Rebuild + push the session_breakdown for a session that exited "
