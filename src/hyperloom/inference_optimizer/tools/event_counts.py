@@ -20,9 +20,10 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
-import sqlite3
 import sys
 from collections import Counter
+
+from hyperloom.observability.readonly import fetchall, readonly_connection
 
 
 def main() -> int:
@@ -81,8 +82,15 @@ def main() -> int:
         params = (int(args.limit),)
 
     counts: Counter[str] = Counter()
-    with sqlite3.connect(str(db)) as con:
-        for fa, ta, topic, payload in con.execute(query, params):
+    # Read-only by construction: a plain ``sqlite3.connect`` here opened the
+    # live session's DB read-write, so an operator inspecting a running session
+    # could take a write lock on it. ``readonly_connection`` uses the
+    # ``mode=ro`` URI form and never creates the file.
+    with readonly_connection(db) as con:
+        if con is None:
+            print(f"cannot open {db} read-only", file=sys.stderr)
+            return 2
+        for fa, ta, topic, payload in fetchall(con, query, params):
             try:
                 p = json.loads(payload)
             except Exception:

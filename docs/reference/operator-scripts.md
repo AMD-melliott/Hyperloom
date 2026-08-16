@@ -1,8 +1,8 @@
 ---
 myst:
     html_meta:
-        "description": "Reference for Hyperloom operator scripts: dump_session_breakdown, dump_session_report, and event_counts. Use these utilities to inspect, export, and report on session data."
-        "keywords": "Hyperloom, operator scripts, session breakdown, session report, event counts, LLM inference, AMD GPU, ROCm, debugging, observability, operator tools"
+        "description": "Reference for Hyperloom operator scripts: status, dump_session_breakdown, dump_session_report, and event_counts. Use these utilities to monitor, inspect, export, and report on session data."
+        "keywords": "Hyperloom, operator scripts, session status, progress, monitoring, session breakdown, session report, event counts, LLM inference, AMD GPU, ROCm, debugging, observability, operator tools"
 ---
 # Hyperloom operator scripts
 
@@ -18,6 +18,60 @@ does **not** auto-discover the latest `$USER_DATA_PATH/<model>/<ts>/` per-sessio
 subdir — under the per-model timestamp layout, pass `--session-dir` explicitly
 (or rely on `INFERENCE_OPTIMIZER_CURRENT_SESSION_DIR`, which the CLI sets during
 a run). See [Hyperloom authentication and credentials](authentication.md).
+
+---
+
+## `status.py`
+
+Print the current phase, wall-clock budget, lane and GPU occupancy, task
+counts, and recent lifecycle events for a session. Read-only, so it is safe to
+run against a live optimization.
+
+Also available as a subcommand: `python -m hyperloom.inference_optimizer.cli status`.
+
+Use this when:
+
+* You want to know what step a running optimization is on without reading the
+  log firehose.
+* You need a machine-readable progress snapshot for a dashboard or a wrapper
+  script (`--json`).
+* You are checking whether a session is still alive after a suspected crash.
+
+Unlike the other scripts on this page, `status.py` auto-discovers the newest
+`$USER_DATA_PATH/<model>/<timestamp>/` session when no `--session-dir` is
+given, instead of stopping at the workspace root.
+
+### Usage
+
+```bash
+# Active session (auto-discovered)
+python -m hyperloom.inference_optimizer.tools.status
+
+# A specific session
+python -m hyperloom.inference_optimizer.tools.status --session-dir <SD>
+
+# Machine-readable snapshot
+python -m hyperloom.inference_optimizer.tools.status --session-dir <SD> --json
+
+# Live view, refreshed every 2s (Ctrl-C to exit)
+python -m hyperloom.inference_optimizer.tools.status --watch
+```
+
+### Reading the output
+
+| Field | Meaning |
+|-------|---------|
+| `running` / `STALLED?` / `ended` / `liveness unknown` | Whether the owning optimizer process is still alive. `ended` means the session recorded a `stop_reason`. `STALLED?` means the process is up but `state.json` has not been rewritten recently — often a long benchmark, sometimes a wedged Coordinator. |
+| `last update ... ago` | Age of the newest evidence. Shown whenever the observation is not live, so a stale snapshot is never presented as current. |
+| `ELAPSED` | Cumulative time in that phase across **all** macro cycles, not just the current entry. Phases repeat: SWEEP loops back to EXPLORE. |
+| `BUDGET` / `USED` | Shown for the running phase only. The budget is charge-back — a phase receives its share of the time *still remaining*, so an overrunning earlier phase shrinks every later one. `USED` above 100% is a real overrun and is reported, not clamped. |
+| `gain ... validated` | Gain re-measured on a fresh server. A provisional per-round figure is shown alongside only when the two disagree. |
+| `—` | Not measured. Never a substitute for a real zero. |
+
+Exit codes: `0` when the session was read (whatever state it is in), `3` when
+no session directory could be resolved, `130` on Ctrl-C. As with `examine`-style
+commands, the exit code reports whether the command **ran**, not what it found —
+so a script can distinguish "could not look" from "looked, and the run is over".
 
 ---
 
