@@ -11,6 +11,7 @@ session would.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -132,23 +133,116 @@ def write_manifest(session_dir: Path, **overrides) -> Path:
     return path
 
 
-def write_lock(session_dir: Path, *, pid: int, hostname: str, heartbeat_at: str = SESSION_START_TS) -> Path:
-    """Write a ``runtime/optimizer.lock`` owner document."""
+def write_lock(
+    session_dir: Path,
+    *,
+    pid: int,
+    hostname: str,
+    heartbeat_at: str = SESSION_START_TS,
+    pid_ns: str | None = None,
+) -> Path:
+    """Write a ``runtime/optimizer.lock`` owner document.
+
+    Args:
+        session_dir: Session root.
+        pid: Recorded owner pid.
+        hostname: Recorded hostname.
+        heartbeat_at: Recorded heartbeat timestamp.
+        pid_ns: Recorded PID-namespace identifier. ``None`` omits the key,
+            reproducing a lock written before the field existed.
+
+    Returns:
+        Path to the written lock.
+    """
     runtime = session_dir / "runtime"
     runtime.mkdir(parents=True, exist_ok=True)
     path = runtime / "optimizer.lock"
-    path.write_text(
-        json.dumps(
-            {
-                "pid": pid,
-                "hostname": hostname,
-                "started_at": SESSION_START_TS,
-                "heartbeat_at": heartbeat_at,
-            }
-        ),
-        encoding="utf-8",
-    )
+    owner = {
+        "pid": pid,
+        "hostname": hostname,
+        "started_at": SESSION_START_TS,
+        "heartbeat_at": heartbeat_at,
+    }
+    if pid_ns is not None:
+        owner["pid_ns"] = pid_ns
+    path.write_text(json.dumps(owner), encoding="utf-8")
     return path
+
+
+def write_activity(session_dir: Path, relpath: str, *, contents: str = "x", age_s: float = 5.0) -> Path:
+    """Write a file under the session tree with an mtime relative to the frozen clock.
+
+    Setting the mtime explicitly matters: the activity source compares mtimes
+    against the injected clock, and a file left at real wall-clock time would
+    read as arbitrarily fresh or stale depending on when the suite runs.
+
+    Args:
+        session_dir: Session root.
+        relpath: Path relative to the session root.
+        contents: File body.
+        age_s: Desired age at :data:`FROZEN_NOW`.
+
+    Returns:
+        Path to the written file.
+    """
+    path = session_dir / relpath
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(contents, encoding="utf-8")
+    stamp = FROZEN_NOW - age_s
+    os.utime(path, (stamp, stamp))
+    return path
+
+
+def write_run(
+    session_dir: Path,
+    *,
+    kind: str = "specialist",
+    run_id: str = "run0001",
+    heartbeat: dict | None = None,
+    heartbeat_age_s: float = 10.0,
+    log_bytes: int = 0,
+    log_age_s: float | None = None,
+    done: bool = False,
+) -> Path:
+    """Create a ``runs/<kind>/<run_id>/`` directory with liveness artifacts.
+
+    Args:
+        session_dir: Session root.
+        kind: Run kind (the ``runs/`` subdirectory).
+        run_id: Run directory name.
+        heartbeat: ``heartbeat.json`` body; omitted when ``None``.
+        heartbeat_age_s: Age of the heartbeat at :data:`FROZEN_NOW`.
+        log_bytes: Size of ``process.log``; omitted when zero.
+        log_age_s: Age of the log; defaults to ``heartbeat_age_s``.
+        done: Also write a ``specialist_done.json``, marking the task terminal.
+
+    Returns:
+        The run directory.
+    """
+    run_dir = session_dir / "runs" / kind / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if heartbeat is not None:
+        write_activity(
+            session_dir,
+            f"runs/{kind}/{run_id}/heartbeat.json",
+            contents=json.dumps(heartbeat),
+            age_s=heartbeat_age_s,
+        )
+    if log_bytes:
+        write_activity(
+            session_dir,
+            f"runs/{kind}/{run_id}/process.log",
+            contents="l" * log_bytes,
+            age_s=(log_age_s if log_age_s is not None else heartbeat_age_s),
+        )
+    if done:
+        write_activity(
+            session_dir,
+            f"runs/{kind}/{run_id}/specialist_done.json",
+            contents="{}",
+            age_s=heartbeat_age_s + 3600.0,
+        )
+    return run_dir
 
 
 def write_coordinator_db(

@@ -1280,8 +1280,24 @@ class KernelPhase(PhaseHandler):
                 )
             return subprocess.CompletedProcess(cmd, p.returncode, out, err)
 
+        # Publish a beacon for the duration of the blocking dispatch. The tick
+        # loop is suspended for as long as this await lasts — up to
+        # ``kill_timeout``, measured at 8h39m on a real run — so ``state.json``
+        # and the coordinator event log both stop moving and an observer has no
+        # way to tell a working GEAK run from a wedged one. The beacon is
+        # written before the call and removed after, and cannot fail the phase.
+        from hyperloom.inference_optimizer.session.current_step import current_step
+
         try:
-            proc = await asyncio.to_thread(_run)
+            with current_step(
+                self.session_dir,
+                phase="KERNEL_AGENT",
+                step="geak_e2e",
+                detail=f"GEAK e2e (from={from_phase or 'unknown'})",
+                deadline_unix=time.time() + kill_timeout,
+                artifacts={"out_dir": str(out_dir), "result": str(result_path)},
+            ):
+                proc = await asyncio.to_thread(_run)
             stderr_tail = (proc.stderr or "")[-2000:]
             if proc.returncode != 0:
                 log.warning("GEAK runner rc=%s: %s", proc.returncode, stderr_tail)

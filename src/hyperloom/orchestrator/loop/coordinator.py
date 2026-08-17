@@ -1697,6 +1697,7 @@ class Coordinator(metaclass=_CoordinatorMeta):
         tick_interval_sec: float = 0.0,
         max_ticks: int | None = None,
         stop_when: Callable[["Coordinator"], Awaitable[bool] | bool] | None = None,
+        on_tick: Callable[[], None] | None = None,
         install_signal_handlers: bool = False,
         crash_emergency_threshold: int = 25,
         closing_grace_sec: float | None = None,
@@ -1711,6 +1712,11 @@ class Coordinator(metaclass=_CoordinatorMeta):
             max_ticks: Optional hard cap on the number of ticks.
             stop_when: Optional custom predicate (sync or async) evaluated each
                 tick; a truthy result stops the run.
+            on_tick: Optional side-effect callback invoked once per tick, used
+                for out-of-band liveness such as refreshing the session lock's
+                ``heartbeat_at``. Kept separate from ``stop_when`` so a
+                heartbeat can never influence the stop decision. Exceptions are
+                swallowed: telemetry must not be able to end a run.
             install_signal_handlers: Whether to install SIGINT/SIGTERM handlers
                 that set the stop event.
             crash_emergency_threshold: Recent-crash count within the emergency
@@ -1925,6 +1931,12 @@ class Coordinator(metaclass=_CoordinatorMeta):
                     if bool(triggered):
                         stop_reason = "custom"
                         break
+
+                if on_tick is not None:
+                    try:
+                        on_tick()
+                    except Exception:  # noqa: BLE001 - telemetry must never stop a run
+                        log.debug("Coordinator: on_tick callback failed", exc_info=True)
 
                 # Brief wait between ticks to avoid CPU spin while staying signal-responsive; 0.0 keeps tests fast.
                 if tick_interval_sec > 0:

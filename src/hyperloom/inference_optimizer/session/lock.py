@@ -56,6 +56,28 @@ except ImportError:  # pragma: no cover - non-POSIX dev hosts (e.g. Windows).
     fcntl = None  # type: ignore[assignment]
 
 
+def _pid_namespace() -> str:
+    """Return an identifier for this process's PID namespace, or ``""``.
+
+    Recorded in the lock body so a reader can tell whether ``pid`` means
+    anything to it. A container normally inherits the host's **hostname**, so
+    hostname equality has been mistaken for "this pid is interpretable here"
+    and it is not: a containerized optimizer writes its namespace-local pid
+    (e.g. ``304617``) next to the host's hostname, and the host either has no
+    such process — reading as dead when the run is fine — or has an unrelated
+    one, reading as alive when the run is long gone. The namespace inode
+    settles it exactly, and costs one ``readlink``.
+
+    Returns:
+        str: e.g. ``"pid:[4026531836]"``, or ``""`` on platforms without
+        ``/proc`` (readers then fall back to the older heuristics).
+    """
+    try:
+        return os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return ""
+
+
 def _pid_alive(pid: int | None) -> bool:
     """Best-effort liveness probe for ``pid`` (used only on the fcntl-less path).
 
@@ -216,6 +238,7 @@ class SessionLock:
         return {
             "pid": os.getpid(),
             "hostname": socket.gethostname(),
+            "pid_ns": _pid_namespace(),
             "started_at": self._started_at,
             "heartbeat_at": now,
         }

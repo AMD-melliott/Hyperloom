@@ -35,9 +35,10 @@ and inconsistent between fields computed microseconds apart.
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
-from .model import PhaseProgress, Snapshot
+from .model import Liveness, PhaseProgress, Snapshot
 
 
 def phase_names() -> tuple[str, ...]:
@@ -206,6 +207,106 @@ class _PhaseView:
     def __getattr__(self, item: str) -> Any:
         """Delegate unknown attributes to the backing snapshot."""
         return getattr(self._snapshot, item)
+
+
+def _shift_age(age: float | None, delta: float) -> float | None:
+    """Advance an age-since-observation by ``delta``, preserving ``None``."""
+    return None if age is None else max(0.0, age + delta)
+
+
+def extrapolate_to(snapshot: Snapshot, now_unix: float) -> Snapshot:
+    """Advance a collected snapshot's clocks to paint time, without any I/O.
+
+    This is what decouples the refresh rate from the collection rate. Data is
+    gathered every few seconds, but the operator watches a timer: it must tick
+    every frame, or the display reads as frozen even when everything is fine.
+
+    Pure arithmetic — no orchestrator import, no filesystem access — so it is
+    cheap enough to call on every repaint.
+
+    Two classes of field move differently:
+
+    * **Ages** (``state_age_s``, heartbeat and activity ages, per-source age)
+      always advance. An age is an age; a finished run's "last update 4h ago"
+      should keep counting up while you watch it.
+    * **Progress** (session and current-phase elapsed, remaining budget) only
+      advances while the run can still be making progress — ``LIVE`` or
+      ``STALE``, and no recorded stop reason. Extrapolating a dead run's
+      elapsed time would reintroduce exactly the runaway-duration bug that
+      :func:`~hyperloom.observability.assemble._progress_clock` exists to
+      prevent, where a finished 8-hour run inspected a week later reported its
+      last phase as lasting a week.
+
+    Args:
+        snapshot: A freshly collected snapshot.
+        now_unix: Paint-time wall clock.
+
+    Returns:
+        A new snapshot with clocks advanced, or ``snapshot`` unchanged when
+        there is nothing to advance. Applying this to an already-extrapolated
+        snapshot is a no-op rather than a compounding error — callers should
+        always extrapolate the pristine collected copy.
+    """
+    if snapshot.rendered_at_unix:
+        return snapshot
+    if not snapshot.observed_at_unix:
+        return snapshot
+    delta = float(now_unix) - float(snapshot.observed_at_unix)
+    if delta <= 0:
+        return snapshot
+
+    changes: dict[str, Any] = {
+        "rendered_at_unix": float(now_unix),
+        "state_age_s": _shift_age(snapshot.state_age_s, delta),
+        "last_activity_age_s": _shift_age(snapshot.last_activity_age_s, delta),
+    }
+
+    if snapshot.running_work:
+        changes["running_work"] = tuple(
+            dataclasses.replace(
+                work,
+                heartbeat_age_s=_shift_age(work.heartbeat_age_s, delta),
+                log_age_s=_shift_age(work.log_age_s, delta),
+            )
+            for work in snapshot.running_work
+        )
+    if snapshot.activity:
+        changes["activity"] = tuple(
+            dataclasses.replace(entry, age_s=max(0.0, entry.age_s + delta)) for entry in snapshot.activity
+        )
+    if snapshot.source_health:
+        changes["source_health"] = tuple(
+            dataclasses.replace(health, age_s=_shift_age(health.age_s, delta)) for health in snapshot.source_health
+        )
+
+    progressing = snapshot.liveness in (Liveness.LIVE, Liveness.STALE) and not snapshot.is_terminal
+    if progressing:
+        cap_s = float(snapshot.max_minutes) * 60.0 if snapshot.max_minutes else None
+        if snapshot.session_elapsed_s is not None:
+            advanced = snapshot.session_elapsed_s + delta
+            # Never extrapolate past the session's own deadline. Past the cap
+            # the run is being wound down, not accruing more budgeted time, and
+            # a timer reading 25:00/24:00 would look like a display bug.
+            changes["session_elapsed_s"] = min(advanced, cap_s) if cap_s else advanced
+        if snapshot.session_remaining_s is not None:
+            changes["session_remaining_s"] = max(0.0, snapshot.session_remaining_s - delta)
+        if snapshot.phases:
+            changes["phases"] = tuple(
+                dataclasses.replace(
+                    row,
+                    elapsed_s=row.elapsed_s + delta,
+                    budget_remaining_s=(
+                        None if row.budget_remaining_s is None else max(0.0, row.budget_remaining_s - delta)
+                    ),
+                )
+                # Only the running phase accrues. A completed phase's banked
+                # total is a fact, not a running clock.
+                if row.is_current
+                else row
+                for row in snapshot.phases
+            )
+
+    return dataclasses.replace(snapshot, **changes)
 
 
 def session_timing(snapshot: Snapshot, *, now_unix: float) -> tuple[float | None, float | None]:

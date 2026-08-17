@@ -26,6 +26,7 @@ from hyperloom.inference_optimizer.session.paths import (
 )
 
 from .model import (
+    ActivityEntry,
     Freshness,
     GpuLease,
     LaneOccupancy,
@@ -33,13 +34,19 @@ from .model import (
     Liveness,
     ResultSummary,
     RunningTask,
+    RunningWork,
     SessionInfo,
     Snapshot,
+    SourceHealth,
+    SourceOutcome,
     TaskCounts,
 )
 from .progress import build_phase_progress, elapsed_totals_from_history, session_timing
 from .sources import (
+    ActivitySource,
     CoordinatorDbSource,
+    CurrentStepSource,
+    GeakSource,
     LockFileSource,
     ManifestSource,
     StateFileSource,
@@ -191,6 +198,7 @@ def _derive_liveness(
     lock: dict[str, Any] | None,
     *,
     state_age_s: float | None,
+    activity_age_s: float | None,
     now_unix: float,
     stale_after_s: float,
     stop_reason: str | None,
@@ -200,25 +208,36 @@ def _derive_liveness(
     ``UNKNOWN`` is a real answer. The lock file is never unlinked, so presence
     proves only that a run once started here.
 
-    Two hazards make the recorded pid weak evidence on its own:
+    **Filesystem activity outranks the pid**, and that ordering is the result
+    of a bug this function shipped. Two hazards make a recorded pid weak
+    evidence in both directions:
 
-    * **PID namespaces.** A containerized run writes the container's pid (often
-      a low number like ``19``) together with the *host's* hostname, because
-      the container shares it. A hostname match therefore does not mean the pid
-      is interpretable here — on the host, pid 19 is an unrelated kernel thread
-      that is very much alive. Observed on a real session; without the freshness
-      gate below it reported a run that ended ten days ago as running.
+    * **PID namespaces.** A containerized run writes the *container's* pid
+      alongside the *host's* hostname, because the container inherits it. A
+      hostname match therefore does not license interpreting the pid locally.
+      Both failure directions were observed on real sessions: a container pid
+      of ``19`` matching an unrelated live kernel thread on the host (false
+      LIVE), and a container pid of ``304617`` with no host counterpart, which
+      this function reported as ``DEAD`` for a run that was thirteen hours in
+      and actively working (false DEAD). The second is the worse error — it
+      also pinned the duration clock, so the running phase displayed ``0s``.
     * **PID reuse.** Even same-namespace, a long-dead optimizer's pid may have
-      been recycled by an unrelated process.
+      been recycled.
 
-    So a pid claim is credited only when ``state.json`` corroborates it. That
-    file is rewritten many times per tick, which makes it the trustworthy
-    liveness signal; ``heartbeat_at`` is not, because it is often written once
-    at startup and never refreshed.
+    So: a pid that is *absent* is treated as uninterpretable rather than as
+    proof of death, and is only allowed to conclude ``DEAD`` when the session
+    tree corroborates it by showing no recent writes either. Conversely, recent
+    writes anywhere in the session tree are positive evidence of life that no
+    namespace can confound.
+
+    ``heartbeat_at`` from the lock is deliberately weak input: on a real
+    thirteen-hour run it was written once at startup and never refreshed.
 
     Args:
         lock: Payload from :class:`~.sources.LockFileSource`, or ``None``.
         state_age_s: Age of ``state.json``, or ``None``.
+        activity_age_s: Age of the freshest write anywhere in the session tree,
+            or ``None`` when the activity source could not read one.
         now_unix: Current time.
         stale_after_s: Age past which corroborating evidence is not fresh.
         stop_reason: Recorded session stop reason, when any.
@@ -227,25 +246,35 @@ def _derive_liveness(
         The liveness classification.
     """
     # A recorded stop reason is the session's own statement that it concluded.
-    # It outranks any pid check, which can only produce false positives here.
+    # It outranks every other signal, which can only produce false positives.
     if stop_reason:
         return Liveness.DEAD
 
+    activity_fresh = activity_age_s is not None and activity_age_s <= stale_after_s
+    state_fresh = state_age_s is not None and state_age_s <= stale_after_s
+
     if not lock:
-        return Liveness.UNKNOWN
+        # No lock to interrogate, but something is writing. Files do not write
+        # themselves; that is enough to say the run is alive.
+        return Liveness.STALE if activity_fresh else Liveness.UNKNOWN
 
     pid_alive = lock.get("pid_alive")
     hb_age = heartbeat_age_s(lock, now_unix=now_unix)
     claims_alive = bool(pid_alive) or (hb_age is not None and hb_age <= LIVE_HEARTBEAT_S)
-    evidence_fresh = state_age_s is not None and state_age_s <= stale_after_s
+
+    if claims_alive or activity_fresh:
+        # Fresh state.json means the loop is publishing. Fresh activity without
+        # it means a long blocking dispatch is in flight — the run is working,
+        # just not ticking, which is STALE rather than LIVE.
+        return Liveness.LIVE if state_fresh else Liveness.STALE
 
     if lock.get("same_host") and pid_alive is False:
-        return Liveness.DEAD
-
-    if claims_alive:
-        # Owner claims the session but the loop is not publishing progress.
-        # Could be a wedged Coordinator, or a stale pid we cannot refute.
-        return Liveness.LIVE if evidence_fresh else Liveness.STALE
+        # The pid is gone AND nothing in the tree has been written recently.
+        # Only with both is death the honest conclusion; the pid alone is not
+        # enough, because it may belong to another namespace entirely.
+        if activity_age_s is not None or state_age_s is not None:
+            return Liveness.DEAD
+        return Liveness.UNKNOWN
 
     return Liveness.UNKNOWN
 
@@ -307,6 +336,33 @@ def _build_result(state: dict[str, Any]) -> ResultSummary:
     )
 
 
+def _build_source_health(reads: list[tuple[str, Any]], *, now_unix: float) -> tuple[SourceHealth, ...]:
+    """Summarise the outcome of each inline source read.
+
+    Inline reads are either fresh or they failed just now, so ``age_s`` is
+    zero for successes. The background collector overwrites these rows with
+    its own, which carry real ages because its values can be minutes old.
+
+    Args:
+        reads: ``(source_name, SourceResult)`` pairs.
+        now_unix: Unused; accepted so the signature matches the collector's.
+
+    Returns:
+        One :class:`~.model.SourceHealth` per source, in read order.
+    """
+    del now_unix
+    return tuple(
+        SourceHealth(
+            name=name,
+            outcome=result.outcome,
+            age_s=0.0 if result.outcome is SourceOutcome.OK else None,
+            error=result.message,
+            consecutive_failures=1 if result.outcome is SourceOutcome.ERROR else 0,
+        )
+        for name, result in reads
+    )
+
+
 def _build_lifecycle(state: dict[str, Any], *, limit: int) -> tuple[LifecycleEvent, ...]:
     """Project the tail of the lifecycle log into model rows."""
     raw = state.get("lifecycle")
@@ -336,6 +392,9 @@ def load_snapshot(
     now_unix: Callable[[], float] | None = None,
     stale_after_s: float = DEFAULT_STALE_AFTER_S,
     lifecycle_limit: int = DEFAULT_LIFECYCLE_LIMIT,
+    activity: bool = True,
+    extras: dict[str, Any] | None = None,
+    extra_reads: list[tuple[str, Any]] | None = None,
 ) -> Snapshot | None:
     """Read one session directory and return an immutable snapshot.
 
@@ -346,6 +405,16 @@ def load_snapshot(
             deterministic, which is how the tests avoid patching ``time``.
         stale_after_s: ``state.json`` age past which a live owner reads STALE.
         lifecycle_limit: Number of trailing lifecycle events to carry.
+        activity: Read sub-phase activity (run heartbeats, recent writes, GEAK
+            progress). Disable for the cheapest possible read.
+        extras: Out-of-band values folded into the snapshot, keyed by field
+            name — used by the background collector to attach ``gpus``,
+            ``server`` and ``source_health``, which are gathered on their own
+            cadences rather than inline here.
+        extra_reads: ``(source_name, SourceResult)`` pairs from sources the
+            caller ran itself. They join the inline reads for warning and
+            health purposes, so a caller-run probe that fails is reported the
+            same way an inline one would be rather than vanishing.
 
     Returns:
         The snapshot, or ``None`` when no session directory could be resolved.
@@ -363,21 +432,44 @@ def load_snapshot(
 
     state_src, manifest_src, lock_src = StateFileSource(), ManifestSource(), LockFileSource()
     db_src = CoordinatorDbSource()
+    step_src = CurrentStepSource()
 
     state_res = state_src.read(resolved)
     manifest_res = manifest_src.read(resolved)
     lock_res = lock_src.read(resolved)
     db_res = db_src.read(resolved, now_unix=now)
+    step_res = step_src.read(resolved)
 
-    for src_name, res in (
+    reads = [
         (state_src.name, state_res),
         (manifest_src.name, manifest_res),
         (lock_src.name, lock_res),
         (db_src.name, db_res),
-    ):
+        (step_src.name, step_res),
+    ]
+
+    activity_res = None
+    geak_res = None
+    if activity:
+        activity_src, geak_src = ActivitySource(), GeakSource()
+        activity_res = activity_src.read(resolved, now_unix=now)
+        geak_res = geak_src.read(resolved)
+        reads.append((activity_src.name, activity_res))
+        reads.append((geak_src.name, geak_res))
+
+    reads.extend(extra_reads or [])
+
+    for src_name, res in reads:
         warning = warning_for(src_name, res)
         if warning:
             warnings.append(warning)
+
+    activity_data: dict[str, Any] = activity_res.data if (activity_res and activity_res.ok) else {}
+    running_work: tuple[RunningWork, ...] = tuple(activity_data.get("running_work", ()) or ())
+    activity_rows: tuple[ActivityEntry, ...] = tuple(activity_data.get("activity", ()) or ())
+    last_activity_age = to_float(activity_data.get("last_activity_age_s"))
+    if activity_data.get("truncated"):
+        warnings.append("activity: walk hit its budget; showing a partial view of recent writes")
 
     state: dict[str, Any] = {}
     state_mtime = 0.0
@@ -423,6 +515,7 @@ def load_snapshot(
     liveness = _derive_liveness(
         lock,
         state_age_s=state_age,
+        activity_age_s=last_activity_age,
         now_unix=now,
         stale_after_s=stale_after_s,
         stop_reason=result.stop_reason,
@@ -489,9 +582,17 @@ def load_snapshot(
         result=result,
         lifecycle=_build_lifecycle(state, limit=lifecycle_limit),
         current_action=(state.get("current_action") or None),
+        current_step=(step_res.data if step_res.ok else None),
+        running_work=running_work,
+        activity=activity_rows,
+        geak=(geak_res.data if (geak_res and geak_res.ok) else None),
+        last_activity_age_s=last_activity_age,
+        source_health=_build_source_health(reads, now_unix=now),
         warnings=tuple(warnings),
         _now_unix=clock,
     )
+    if extras:
+        base = replace_derived(base, **extras)
 
     # Phase progress needs the assembled snapshot as its "frozen state view",
     # so it is derived in a second pass and folded in. Duration math uses

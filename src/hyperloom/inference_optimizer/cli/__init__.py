@@ -2901,6 +2901,11 @@ async def _run_optimize(args: argparse.Namespace) -> int:
             max_minutes=args.max_hours * 60.0,
             tick_interval_sec=args.tick_interval_sec,
             max_ticks=args.max_ticks,
+            # Refresh the lock's ``heartbeat_at`` each tick. Without this the
+            # field is written once at acquire and never again, so an observer
+            # reading a thirteen-hour-old lock cannot tell a live optimizer
+            # from one that died at startup.
+            on_tick=session_lock.heartbeat,
             install_signal_handlers=True,
             closing_grace_sec=args.closing_grace_sec,
         )
