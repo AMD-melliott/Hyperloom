@@ -10,8 +10,10 @@ metric it never observed is actively misleading.
 
 Conventions:
 
-* Durations are human-scaled (``4h12m``, ``18m``, ``42s``) — a status view is
-  read at a glance, not parsed.
+* Durations come in two flavours. :func:`duration` is human-scaled (``4h12m``,
+  ``18m``, ``42s``) and reads well inline; :func:`clock` is fixed-width
+  ``HH:MM`` and is what tabular columns and the session timer use, because a
+  column of clock times aligns without padding tricks.
 * Every value carries its unit in the rendered text, so meaning never depends
   on color alone.
 * Colour is opt-in and centrally gated; see :class:`Style`.
@@ -140,6 +142,37 @@ def duration(seconds: float | None, *, dash: str = DASH_UNICODE) -> str:
     return f"{hours}h{rem_min:02d}m"
 
 
+def clock(seconds: float | None, *, dash: str = DASH_UNICODE) -> str:
+    """Render a duration as a fixed-width ``HH:MM`` timer.
+
+    Hours are **not** wrapped at 24 — this measures elapsed time against a
+    budget, not a time of day, so a 30-hour run reads ``30:00`` rather than
+    rolling over to ``06:00``. Minutes truncate rather than round, so a timer
+    never displays a minute the run has not finished spending.
+
+    Sub-minute durations render ``00:00``. That is a deliberate trade: the
+    session timer and the phase table are columns of multi-hour values, and
+    fixed width buys alignment worth more than second-level resolution there.
+    Use :func:`duration` where sub-minute precision matters.
+
+    Args:
+        seconds: Duration; ``None`` yields the placeholder.
+        dash: Placeholder for ``None``.
+
+    Returns:
+        e.g. ``"00:00"``, ``"00:42"``, ``"13:31"``, ``"168:00"``.
+    """
+    if seconds is None:
+        return dash
+    try:
+        total = max(0, int(float(seconds)))
+    except (TypeError, ValueError):
+        return dash
+    hours, rem = divmod(total, 3600)
+    minutes = rem // 60
+    return f"{hours:02d}:{minutes:02d}"
+
+
 def percent(value: float | None, *, dash: str = DASH_UNICODE, signed: bool = False) -> str:
     """Render a percentage already expressed in percent units.
 
@@ -197,6 +230,33 @@ def number(value: float | None, *, unit: str = "", dash: str = DASH_UNICODE) -> 
     except (TypeError, ValueError):
         return dash
     return f"{rendered} {unit}".rstrip() if unit else rendered
+
+
+def bytes_size(value: float | None, *, dash: str = DASH_UNICODE) -> str:
+    """Render a byte count at human scale.
+
+    Args:
+        value: Size in bytes; ``None`` yields the placeholder.
+        dash: Placeholder for ``None``.
+
+    Returns:
+        e.g. ``"0 B"``, ``"302 B"``, ``"51 KB"``, ``"1.2 MB"``.
+    """
+    if value is None:
+        return dash
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        return dash
+    if size < 1024:
+        return f"{int(size)} B"
+    for unit in ("KB", "MB", "GB"):
+        size /= 1024.0
+        if size < 1024 or unit == "GB":
+            # One decimal only once the number is small enough for it to mean
+            # something; "1023.4 KB" is noise, "1.2 MB" is not.
+            return f"{size:.0f} {unit}" if size >= 100 else f"{size:.1f} {unit}"
+    return f"{size:.1f} GB"  # pragma: no cover - unreachable, loop always returns
 
 
 def bar(fraction: float | None, *, width: int, style: Style) -> str:

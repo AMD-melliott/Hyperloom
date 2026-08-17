@@ -21,7 +21,10 @@ from typing import Any
 from ..model import Snapshot
 
 
-SCHEMA_VERSION = 1
+# 2 adds ``activity`` (current step, sub-agent work, recent writes, GEAK
+# progress), ``metrics`` (GPU and inference server) and ``sources`` (per-source
+# collection health). Version 1 keys are all still present and unchanged.
+SCHEMA_VERSION = 2
 
 
 def to_dict(snapshot: Snapshot) -> dict[str, Any]:
@@ -36,9 +39,17 @@ def to_dict(snapshot: Snapshot) -> dict[str, Any]:
     session = snapshot.session
     result = snapshot.result
 
+    step = snapshot.current_step
+    gpus = snapshot.gpus
+    server = snapshot.server
+    geak = snapshot.geak
+
     return {
         "schema_version": SCHEMA_VERSION,
         "observed_at_unix": snapshot.observed_at_unix,
+        # Non-zero once the clock has been advanced to paint time; consumers
+        # comparing the two can tell how old the underlying reading is.
+        "rendered_at_unix": snapshot.rendered_at_unix or None,
         "session": {
             "session_dir": session.session_dir,
             "session_id": session.session_id,
@@ -145,6 +156,103 @@ def to_dict(snapshot: Snapshot) -> dict[str, Any]:
                 "duration_s": event.duration_s,
             }
             for event in snapshot.lifecycle
+        ],
+        "activity": {
+            "last_activity_age_s": snapshot.last_activity_age_s,
+            "current_step": (
+                None
+                if step is None
+                else {
+                    "phase": step.phase,
+                    "step": step.step,
+                    "detail": step.detail,
+                    "started_unix": step.started_unix,
+                    "deadline_unix": step.deadline_unix,
+                    "artifacts": dict(step.artifacts),
+                }
+            ),
+            "running_work": [
+                {
+                    "kind": work.kind,
+                    "run_id": work.run_id,
+                    "status": work.status,
+                    "note": work.note,
+                    "turn": work.turn,
+                    "max_turns": work.max_turns,
+                    "heartbeat_age_s": work.heartbeat_age_s,
+                    "log_bytes": work.log_bytes,
+                    "log_growth_bps": work.log_growth_bps,
+                    "log_age_s": work.log_age_s,
+                    "age_s": work.age_s,
+                    "has_partial_result": work.has_partial_result,
+                    "task_terminal": work.task_terminal,
+                }
+                for work in snapshot.running_work
+            ],
+            "recent_writes": [
+                {"path": entry.relpath, "age_s": entry.age_s, "size_bytes": entry.size_bytes}
+                for entry in snapshot.activity
+            ],
+            "geak": (
+                None
+                if geak is None
+                else {
+                    "cycle": geak.cycle,
+                    "task": geak.task,
+                    "round": geak.round_no,
+                    "engineers": list(geak.engineers),
+                    "active_engineer": geak.active_engineer,
+                    "active_stage": geak.active_stage,
+                    "has_result": geak.has_result,
+                }
+            ),
+        },
+        "metrics": {
+            "gpu": (
+                None
+                if gpus is None
+                else {
+                    "tool": gpus.tool,
+                    # True means these readings cover the whole node, not just
+                    # this session. Consumers must not attribute them.
+                    "host_global": gpus.host_global,
+                    "gpus": [
+                        {
+                            "index": gpu.index,
+                            "util_pct": gpu.util_pct,
+                            "mem_activity_pct": gpu.mem_activity_pct,
+                            "mem_used_mb": gpu.mem_used_mb,
+                            "mem_total_mb": gpu.mem_total_mb,
+                            "power_w": gpu.power_w,
+                        }
+                        for gpu in gpus.gpus
+                    ],
+                }
+            ),
+            "server": (
+                None
+                if server is None
+                else {
+                    "url": server.url,
+                    "requests_running": server.requests_running,
+                    "requests_waiting": server.requests_waiting,
+                    "kv_cache_pct": server.kv_cache_pct,
+                    "prompt_tokens_total": server.prompt_tokens_total,
+                    "generation_tokens_total": server.generation_tokens_total,
+                    "tput_tok_s": server.tput_tok_s,
+                }
+            ),
+        },
+        "sources": [
+            {
+                "name": health.name,
+                "outcome": health.outcome.value,
+                "age_s": health.age_s,
+                "error": health.error,
+                "consecutive_failures": health.consecutive_failures,
+                "duration_s": health.duration_s,
+            }
+            for health in snapshot.source_health
         ],
         "warnings": list(snapshot.warnings),
     }

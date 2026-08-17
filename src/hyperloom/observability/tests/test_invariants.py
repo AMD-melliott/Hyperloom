@@ -80,6 +80,29 @@ def test_model_does_not_import_orchestrator() -> None:
     assert result.stdout.strip() == "", f"model leaked orchestrator imports: {result.stdout.strip()}"
 
 
+def test_package_import_does_not_pull_the_orchestrator() -> None:
+    """Importing the package itself must stay cheap and orchestrator-free.
+
+    ``model`` alone being clean is not enough: the package ``__init__`` re-
+    exports from ``assemble`` and ``progress``, and ``progress`` is the one
+    module that reaches into ``machine_state``. It does so with function-level
+    imports specifically so this stays true, which is easy to undo by moving
+    one import to the top of the file.
+    """
+    code = (
+        "import sys; import hyperloom.observability; "
+        "print(';'.join(m for m in sys.modules if m.startswith('hyperloom.orchestrator')))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=str(Path(__file__).resolve().parents[3]),
+    )
+    assert result.stdout.strip() == "", f"package leaked orchestrator imports: {result.stdout.strip()}"
+
+
 def test_ray_obs_id_base_matches_orchestrator() -> None:
     """The mirrored Ray sentinel must track its upstream definition.
 
@@ -111,3 +134,66 @@ def test_snapshot_satisfies_machine_state_contract(session_dir: Path, frozen_clo
     assert machine_state.phase_cumulative_seconds(snapshot, phase="PRELUDE", now_unix=frozen_clock()) > 0
     assert machine_state.session_remaining_seconds(snapshot, now_unix=frozen_clock()) is not None
     assert machine_state.normalize_budget_pct(snapshot.phase_budget_pct)["EXPLORE"] == 0.45
+
+
+def test_read_only_invariant_covers_the_new_sources(tmp_path: Path, frozen_clock) -> None:
+    """Activity, GEAK and beacon reads must not touch the session either.
+
+    The original invariant only exercised state/manifest/lock/db. The activity
+    walk stats thousands of files and the GEAK source descends an output tree,
+    so both get far more opportunity to mutate something by accident.
+    """
+    from .conftest import write_activity, write_run, write_state
+
+    sd = tmp_path / "busy"
+    write_state(sd)
+    write_run(sd, run_id="a1", heartbeat={"status": "running", "note": "working"}, log_bytes=64)
+    write_activity(sd, "geak/handoff.json", contents="{}")
+    write_activity(sd, "geak/e2e_cycle0/kernels/_exp/team_x/task_y/round_1/engineer_0/verify/driver.log")
+    write_activity(sd, "reports/optimization_journal.json", contents="{}")
+
+    before = _tree_fingerprint(sd)
+    snapshot = load_snapshot(sd, now_unix=frozen_clock)
+    assert snapshot is not None
+    assert snapshot.running_work, "fixture should have produced running work"
+    assert snapshot.geak is not None, "fixture should have produced GEAK progress"
+
+    assert _tree_fingerprint(sd) == before, "reading activity mutated the session"
+
+
+def test_beacon_source_never_creates_the_beacon(tmp_path: Path, frozen_clock) -> None:
+    """The producer removes the beacon on exit; a reader must not resurrect it.
+
+    A recreated beacon would strand a phantom "step in flight" on the display
+    for the rest of the session.
+    """
+    from hyperloom.observability.sources.current_step import CurrentStepSource, beacon_path
+
+    from .conftest import write_state
+
+    sd = tmp_path / "no-beacon"
+    write_state(sd)
+
+    assert CurrentStepSource().read(sd).outcome.value == "absent"
+    assert not beacon_path(sd).exists()
+    assert not (sd / "runtime").exists()
+
+
+def test_gpu_and_server_sources_ignore_the_session_directory(tmp_path: Path, monkeypatch) -> None:
+    """Host-scoped probes must not read or write inside a session.
+
+    They accept ``session_dir`` only for protocol symmetry; taking a dependency
+    on it would make a host metric look session-attributable, which the model
+    explicitly denies.
+    """
+    from hyperloom.observability.sources import GpuSource, ServerMetricsSource
+
+    sd = tmp_path / "session"
+    sd.mkdir()
+    before = _tree_fingerprint(sd)
+
+    monkeypatch.setattr("hyperloom.observability.sources.server.discover_base_url", lambda: None)
+    GpuSource().read(sd)
+    ServerMetricsSource().read(sd)
+
+    assert _tree_fingerprint(sd) == before

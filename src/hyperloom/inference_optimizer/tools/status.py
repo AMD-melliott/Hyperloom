@@ -42,10 +42,15 @@ EXIT_OK = 0
 EXIT_CONFIG_ERROR = 3
 EXIT_INTERRUPT = 130
 
-# Fast enough to feel live, slow enough that a networked session directory is
-# not hammered. state.json is rewritten many times per tick, so there is no
-# value in polling faster than the operator can read.
-DEFAULT_INTERVAL_SEC = 2.0
+# Paint rate. Distinct from the collection rate below: the display repaints
+# every second so the elapsed timers tick visibly, while the underlying data is
+# gathered on slower, per-source cadences. Decoupling the two is what keeps the
+# clock moving when a probe is slow or hung.
+DEFAULT_INTERVAL_SEC = 1.0
+
+# Session-artifact collection rate. state.json is rewritten many times per
+# tick, so there is no value in re-reading it faster than this.
+DEFAULT_COLLECT_INTERVAL_SEC = 2.0
 
 
 def add_status_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -87,7 +92,17 @@ def add_status_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
         "--interval",
         type=float,
         default=DEFAULT_INTERVAL_SEC,
-        help=f"Seconds between refreshes in --watch mode (default: {DEFAULT_INTERVAL_SEC}).",
+        help=f"Seconds between repaints in --watch mode (default: {DEFAULT_INTERVAL_SEC}).",
+    )
+    parser.add_argument(
+        "--collect-interval",
+        type=float,
+        default=DEFAULT_COLLECT_INTERVAL_SEC,
+        help=(
+            "Seconds between session-artifact reads in --watch mode "
+            f"(default: {DEFAULT_COLLECT_INTERVAL_SEC}). Independent of --interval: "
+            "the timers keep ticking between collections."
+        ),
     )
     parser.add_argument(
         "--lifecycle-limit",
@@ -99,6 +114,29 @@ def add_status_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
         "--no-color",
         action="store_true",
         help="Disable ANSI colour even on a TTY.",
+    )
+    parser.add_argument(
+        "--no-gpu",
+        action="store_true",
+        help="Skip the amd-smi GPU probe.",
+    )
+    parser.add_argument(
+        "--vllm-url",
+        default=None,
+        help=(
+            "Inference server base URL for /metrics. Auto-discovered from listening "
+            "ports when omitted; no server is normal during a KERNEL_AGENT phase."
+        ),
+    )
+    parser.add_argument(
+        "--no-server",
+        action="store_true",
+        help="Skip the inference-server /metrics scrape.",
+    )
+    parser.add_argument(
+        "--show-sources",
+        action="store_true",
+        help="Always show the per-source collection health footer, not only when degraded.",
     )
     return parser
 
@@ -139,8 +177,32 @@ def run(args: argparse.Namespace) -> int:
     return code
 
 
+def _style_for(args: argparse.Namespace):
+    """Build the render style, honouring ``--no-color``."""
+    style = detect_style()
+    if args.no_color:
+        style = type(style)(color=False, unicode=style.unicode, width=style.width)
+    return style
+
+
+def _render(args: argparse.Namespace, snapshot) -> str:
+    """Render one snapshot in the requested format."""
+    if args.json:
+        return render_json(snapshot)
+    return render_status(
+        snapshot,
+        style=_style_for(args),
+        lifecycle_limit=args.lifecycle_limit,
+        show_sources=args.show_sources,
+    )
+
+
 def _render_once(args: argparse.Namespace) -> tuple[int, str]:
-    """Load and render one snapshot.
+    """Load and render one snapshot synchronously.
+
+    The one-shot path deliberately stays inline rather than going through the
+    background collector: a single invocation should be deterministic, finish,
+    and — for ``--json`` — produce exactly one document from exactly one read.
 
     Args:
         args: Parsed arguments.
@@ -150,18 +212,42 @@ def _render_once(args: argparse.Namespace) -> tuple[int, str]:
         session that resolves renders successfully whatever state it is in.
     """
     session_dir = Path(args.session_dir) if args.session_dir else None
-    snapshot = load_snapshot(session_dir, model=args.model, lifecycle_limit=max(args.lifecycle_limit, 12))
+    extras: dict[str, object] = {}
+    # Carried into the snapshot alongside the inline reads so a probe that
+    # fails here is warned about and appears in the SOURCES footer, rather than
+    # leaving a blank where a metric should be with nothing to explain it.
+    extra_reads: list[tuple[str, object]] = []
+
+    if not args.no_gpu:
+        from hyperloom.observability.sources import GpuSource
+
+        source = GpuSource()
+        result = source.read()
+        extra_reads.append((source.name, result))
+        if result.ok:
+            extras["gpus"] = result.data
+
+    if not args.no_server:
+        from hyperloom.observability.sources import ServerMetricsSource
+
+        source = ServerMetricsSource(base_url=args.vllm_url)
+        result = source.read()
+        extra_reads.append((source.name, result))
+        if result.ok:
+            extras["server"] = result.data
+
+    snapshot = load_snapshot(
+        session_dir,
+        model=args.model,
+        lifecycle_limit=max(args.lifecycle_limit, 12),
+        extras=extras or None,
+        extra_reads=extra_reads or None,
+    )
     if snapshot is None:
         target = args.session_dir or "$INFERENCE_OPTIMIZER_CURRENT_SESSION_DIR / workspace root"
         return EXIT_CONFIG_ERROR, f"no Hyperloom session found at {target}"
 
-    if args.json:
-        return EXIT_OK, render_json(snapshot)
-
-    style = detect_style()
-    if args.no_color:
-        style = type(style)(color=False, unicode=style.unicode, width=style.width)
-    return EXIT_OK, render_status(snapshot, style=style, lifecycle_limit=args.lifecycle_limit)
+    return EXIT_OK, _render(args, snapshot)
 
 
 class _Terminated(BaseException):
@@ -179,6 +265,12 @@ class _Terminated(BaseException):
 
 def _watch(args: argparse.Namespace) -> int:
     """Repaint the status view until interrupted.
+
+    Data gathering runs on background threads and the paint loop only reads a
+    cache, so a slow ``amd-smi``, an unresponsive server, or a stalled network
+    filesystem degrades one field rather than freezing the frame. The elapsed
+    timers are advanced arithmetically on every repaint, which is why they tick
+    once a second off a two-second collection cadence.
 
     Uses the alternate screen buffer so the operator's scrollback survives.
     Non-TTY output degrades to appended one-shot renders, which keeps
@@ -199,6 +291,15 @@ def _watch(args: argparse.Namespace) -> int:
     """
     import signal
 
+    from hyperloom.observability.assemble import resolve_session_dir
+    from hyperloom.observability.collector import SessionMonitor
+
+    session_dir = resolve_session_dir(Path(args.session_dir) if args.session_dir else None, model=args.model)
+    if session_dir is None:
+        target = args.session_dir or "$INFERENCE_OPTIMIZER_CURRENT_SESSION_DIR / workspace root"
+        print(f"no Hyperloom session found at {target}", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+
     interactive = sys.stdout.isatty() and not args.json
 
     def _raise_terminated(signum: int, _frame: object) -> None:
@@ -215,15 +316,29 @@ def _watch(args: argparse.Namespace) -> int:
             # Not the main thread, or the signal cannot be handled here.
             pass
 
+    monitor = SessionMonitor(
+        session_dir,
+        gpu=not args.no_gpu,
+        server=not args.no_server,
+        server_url=args.vllm_url,
+        lifecycle_limit=max(args.lifecycle_limit, 12),
+        session_interval_s=max(0.5, float(args.collect_interval)),
+    )
+
     if interactive:
         sys.stdout.write("\033[?1049h\033[?25l")  # alternate screen, hide cursor
         sys.stdout.flush()
     try:
+        monitor.start()
         while True:
-            code, text = _render_once(args)
-            if code != EXIT_OK:
-                print(text, file=sys.stderr)
-                return code
+            snapshot = monitor.current()
+            if snapshot is None:
+                # Nothing has been read successfully yet. Keep waiting rather
+                # than exiting: a session directory that is mid-creation
+                # resolves a moment later.
+                time.sleep(max(0.2, float(args.interval)))
+                continue
+            text = _render(args, snapshot)
             if interactive:
                 # Home the cursor and clear forward rather than clearing first,
                 # which avoids the flash a full erase produces on each frame.
@@ -237,6 +352,7 @@ def _watch(args: argparse.Namespace) -> int:
     except _Terminated as terminated:
         return 128 + terminated.signum
     finally:
+        monitor.stop()
         if interactive:
             # Best-effort teardown. If the controlling terminal has already
             # gone away these writes fail, and that must not turn a clean exit
