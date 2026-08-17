@@ -1686,6 +1686,29 @@ def test_dispatcher_inline_whitelist_filters_denied_unregistered_and_lane_holdin
     assert disp._inline_action_whitelist() == frozenset()
 
 
+def test_dispatcher_inline_whitelist_excludes_robustness_only_actions() -> None:
+    """``recover`` is otherwise inline-eligible (registered, has an executor,
+    no lanes) but is restricted to role=robustness in
+    ``DELEGATE_ACTION_SOURCE_ALLOWLIST`` — run_action_now always validates as
+    role="orchestration", so offering it here would just guarantee a
+    PolicyDenied on every attempt. Regression test for the bug where
+    orchestration repeatedly tried (and failed) to run `recover` this way,
+    contributing to a 60-tick stall with zero forward progress."""
+    from hyperloom.orchestrator.loop.dispatcher import DispatcherCollaborator
+    from hyperloom.orchestrator.policy.gate import DELEGATE_ACTION_SOURCE_ALLOWLIST
+
+    assert "orchestration" not in DELEGATE_ACTION_SOURCE_ALLOWLIST.get("recover", frozenset())
+
+    coord = SimpleNamespace(
+        action_registry={name: object() for name in ("recover", "ok_action")},
+        sub=SimpleNamespace(executor_registry={"recover": object(), "ok_action": object()}),
+        _INLINE_ACTION_DENY=frozenset(),
+    )
+    disp = DispatcherCollaborator(coord)
+    disp._registry_lanes_ttl = lambda name: ([], 60)
+    assert disp._inline_action_whitelist() == frozenset({"ok_action"})
+
+
 def test_dispatcher_run_action_now_sync_edge_returns(monkeypatch: pytest.MonkeyPatch) -> None:
     from hyperloom.orchestrator.loop import dispatcher as dispatcher_mod
     from hyperloom.orchestrator.loop.dispatcher import DispatcherCollaborator
