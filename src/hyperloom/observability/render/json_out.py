@@ -53,8 +53,15 @@ def to_dict(snapshot: Snapshot) -> dict[str, Any]:
         "session": {
             "session_dir": session.session_dir,
             "session_id": session.session_id,
+            # The manifest's literal value, which is usually a Hugging Face
+            # snapshot sha. Kept verbatim for correlation; use "model_display"
+            # for anything a person reads.
             "model_name": session.model_name,
+            "model_display": session.model_display,
+            "model_path": session.model_path,
+            "model_revision": session.model_revision,
             "framework": session.framework,
+            "framework_version": session.framework_version,
             "gpu_type": session.gpu_type,
             "tp": session.tp,
             "ep": session.ep,

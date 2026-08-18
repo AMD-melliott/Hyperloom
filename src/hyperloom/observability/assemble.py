@@ -15,7 +15,7 @@ Nothing here writes. That is asserted, not assumed — see
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from hyperloom.common.coerce import to_float, to_int
@@ -279,6 +279,68 @@ def _derive_liveness(
     return Liveness.UNKNOWN
 
 
+# Hugging Face lays its cache out as
+# ``<root>/hub/models--<org>--<repo>/snapshots/<revision>/``, so the directory a
+# server is actually pointed at is named after a 40-char commit sha. The
+# manifest's ``model_name`` is ``Path(model).name`` of exactly that directory
+# (``cli.bootstrap.resolve_model_display_name``), which is why an operator sees
+# ``a4e59da52a7bc87ae...`` where the model should be.
+_HF_REPO_PREFIX = "models--"
+
+
+def parse_hf_cache_path(model_path: str | None) -> tuple[str | None, str | None]:
+    """Recover the repo id and revision from a Hugging Face cache path.
+
+    ``huggingface_hub`` encodes a repo id by replacing ``/`` with ``--``, so the
+    inverse is a plain substitution. Anything that is not that layout — a plain
+    directory of weights, a quantization export — yields ``(None, None)`` and
+    the caller falls back to the declared name.
+
+    Args:
+        model_path: Filesystem path the run was pointed at.
+
+    Returns:
+        ``(repo_id, revision)``, either element ``None`` when not recoverable.
+    """
+    if not model_path:
+        return None, None
+    parts = PurePosixPath(str(model_path)).parts
+    for position, part in enumerate(parts):
+        if part != "snapshots" or position == 0:
+            continue
+        folder = parts[position - 1]
+        if not folder.startswith(_HF_REPO_PREFIX):
+            continue
+        repo = folder[len(_HF_REPO_PREFIX) :].replace("--", "/")
+        revision = parts[position + 1] if position + 1 < len(parts) else None
+        return repo or None, revision or None
+    return None, None
+
+
+def framework_version(manifest: dict[str, Any], framework: str | None) -> str | None:
+    """Pull the running framework's version out of the stack fingerprint.
+
+    ``common.provenance.detect_stack_fingerprint`` records one entry per stack
+    component, writing the literal string ``"unknown"`` for anything it could
+    not probe. That is an absence, not a version, so it maps to ``None`` rather
+    than being displayed.
+
+    Args:
+        manifest: Parsed ``manifest.json``.
+        framework: The framework in use, e.g. ``"vllm"``.
+
+    Returns:
+        The version string, or ``None``.
+    """
+    fingerprint = manifest.get("stack_fingerprint")
+    if not isinstance(fingerprint, dict) or not framework:
+        return None
+    value = str(fingerprint.get(str(framework).strip().lower()) or "").strip()
+    if not value or value.lower() == "unknown":
+        return None
+    return value
+
+
 def _build_session_info(session_dir: Path, manifest: dict[str, Any], state: dict[str, Any]) -> SessionInfo:
     """Join manifest and state into workload identity.
 
@@ -302,11 +364,23 @@ def _build_session_info(session_dir: Path, manifest: dict[str, Any], state: dict
             value = state.get(state_key or key)
         return value if value not in (None, "") else None
 
+    declared_model = pick("model_name")
+    model_path = pick("model_path")
+    repo, revision = parse_hf_cache_path(model_path)
+    # The repo id wins when the path yields one: it is the only place the real
+    # model name survives, because the declared name is the snapshot directory.
+    display = repo or declared_model or (PurePosixPath(str(model_path)).name if model_path else None)
+    framework = pick("framework")
+
     return SessionInfo(
         session_dir=str(session_dir),
         session_id=pick("session_id"),
-        model_name=pick("model_name"),
-        framework=pick("framework"),
+        model_name=declared_model,
+        model_display=display or None,
+        model_path=model_path,
+        model_revision=revision,
+        framework=framework,
+        framework_version=framework_version(manifest, framework),
         gpu_type=pick("gpu_type"),
         tp=to_int(pick("tp")),
         ep=to_int(pick("ep")),

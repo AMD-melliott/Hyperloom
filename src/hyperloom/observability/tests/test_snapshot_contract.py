@@ -33,7 +33,10 @@ import socket
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from hyperloom.observability import Freshness, Liveness, load_snapshot
+from hyperloom.observability.assemble import parse_hf_cache_path
 
 from .conftest import (
     FROZEN_NOW,
@@ -350,6 +353,125 @@ def test_state_fills_gaps_when_manifest_absent(tmp_path: Path, frozen_clock) -> 
     assert snapshot.session.model_name == "test-model"
     assert snapshot.session.gpu_type == "mi300x"
     assert snapshot.session.tp == 8
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/hub/models--Qwen--Qwen3-8B/snapshots/abc123", ("Qwen/Qwen3-8B", "abc123")),
+        # A subdirectory below the snapshot is still the same snapshot.
+        ("/hub/models--Qwen--Qwen3-8B/snapshots/abc123/nested", ("Qwen/Qwen3-8B", "abc123")),
+        # Org and repo names contain hyphens of their own; only the doubled
+        # separator marks the boundary huggingface_hub encoded.
+        ("/hub/models--meta-models--Muse-Glimmer-30B/snapshots/a4e", ("meta-models/Muse-Glimmer-30B", "a4e")),
+        # Truncated layouts must not IndexError.
+        ("/hub/models--Qwen--Qwen3-8B/snapshots", ("Qwen/Qwen3-8B", None)),
+        # Not an HF cache at all.
+        ("/models/Qwen3-8B", (None, None)),
+        ("/hub/Qwen3-8B/snapshots/abc123", (None, None)),
+        ("snapshots/abc123", (None, None)),
+        ("", (None, None)),
+        (None, (None, None)),
+    ],
+)
+def test_hf_cache_path_parsing(path, expected) -> None:
+    """The path parser is total: any input yields a pair, never an exception."""
+    assert parse_hf_cache_path(path) == expected
+
+
+def test_hf_snapshot_path_recovers_the_real_model_name(tmp_path: Path, frozen_clock) -> None:
+    """A manifest ``model_name`` of a commit sha must not reach the operator.
+
+    Observed verbatim on a live run: the manifest recorded
+    ``model_name: "a4e59da52a7bc87ae7251dd5545c0dd437c44b68"``, because
+    ``resolve_model_display_name`` takes ``Path(args.model).name`` and the
+    served path is a Hugging Face *snapshot* directory. The repo id is still
+    recoverable from the path, and that is the only place it survives.
+    """
+    sd = tmp_path / "hf"
+    write_state(sd)
+    write_manifest(
+        sd,
+        model_name="a4e59da52a7bc87ae7251dd5545c0dd437c44b68",
+        model_path=(
+            "/data/hf_home/hub/models--meta-models--Muse-Glimmer-30B/snapshots/a4e59da52a7bc87ae7251dd5545c0dd437c44b68"
+        ),
+    )
+
+    session = load_snapshot(sd, now_unix=frozen_clock).session
+
+    assert session.model_display == "meta-models/Muse-Glimmer-30B"
+    assert session.model_revision == "a4e59da52a7bc87ae7251dd5545c0dd437c44b68"
+    # The declared value stays verbatim: it is the join key against every other
+    # Hyperloom artifact that recorded the same (wrong) name.
+    assert session.model_name == "a4e59da52a7bc87ae7251dd5545c0dd437c44b68"
+
+
+def test_plain_model_directory_keeps_its_declared_name(tmp_path: Path, frozen_clock) -> None:
+    """Not every path is an HF cache; a normal weights directory is left alone.
+
+    This also covers the quantization prelude, which rewrites the model path to
+    an export dir and pins the true identity in ``model_name``.
+    """
+    sd = tmp_path / "plain"
+    write_state(sd)
+    write_manifest(sd, model_name="Qwen3-8B-FP8", model_path="/models/exports/quantized")
+
+    session = load_snapshot(sd, now_unix=frozen_clock).session
+
+    assert session.model_display == "Qwen3-8B-FP8"
+    assert session.model_revision is None
+
+
+def test_model_display_falls_back_to_the_path_basename(tmp_path: Path, frozen_clock) -> None:
+    """With no declared name at all, the path is better than nothing."""
+    sd = tmp_path / "unnamed"
+    write_state(sd, model_name="")
+    write_manifest(sd, model_name="", model_path="/models/Llama-3.1-70B")
+
+    assert load_snapshot(sd, now_unix=frozen_clock).session.model_display == "Llama-3.1-70B"
+
+
+def test_framework_version_comes_from_the_stack_fingerprint(tmp_path: Path, frozen_clock) -> None:
+    """The version shown must be the one for the framework actually in use."""
+    sd = tmp_path / "stack"
+    write_state(sd)
+    write_manifest(
+        sd,
+        framework="vllm",
+        stack_fingerprint={
+            "aiter": "unknown",
+            "rocm": "7.2.3",
+            "sglang": "0.4.0",
+            "vllm": "0.27.2rc1.dev150+g311b3513a",
+        },
+    )
+
+    session = load_snapshot(sd, now_unix=frozen_clock).session
+
+    assert session.framework_version == "0.27.2rc1.dev150+g311b3513a"
+
+
+def test_unknown_framework_version_is_none_not_the_word_unknown(tmp_path: Path, frozen_clock) -> None:
+    """``detect_stack_fingerprint`` writes the literal ``"unknown"``.
+
+    That is an absence, and rendering it verbatim would put the word "unknown"
+    next to the framework name as if it were a version string.
+    """
+    sd = tmp_path / "unprobed"
+    write_state(sd)
+    write_manifest(sd, framework="sglang", stack_fingerprint={"sglang": "unknown", "vllm": "0.9.0"})
+
+    assert load_snapshot(sd, now_unix=frozen_clock).session.framework_version is None
+
+
+def test_missing_stack_fingerprint_is_tolerated(tmp_path: Path, frozen_clock) -> None:
+    """Older manifests predate the fingerprint block entirely."""
+    sd = tmp_path / "legacy"
+    write_state(sd)
+    write_manifest(sd, framework="vllm")
+
+    assert load_snapshot(sd, now_unix=frozen_clock).session.framework_version is None
 
 
 def test_unresolvable_session_returns_none(tmp_path: Path, frozen_clock) -> None:
