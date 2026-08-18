@@ -61,22 +61,69 @@ def _phase_mark(style: Style, kind: str) -> str:
     return table[kind]
 
 
-def _header(snapshot: Snapshot, style: Style) -> list[str]:
-    """Render the identity and liveness header."""
+def _workload_bits(snapshot: Snapshot) -> list[str]:
+    """Describe the topology and workload shape being optimized.
+
+    Sequence lengths are labelled individually rather than written as a bare
+    ``1024/1024`` pair: two unlabelled numbers separated by a slash are only
+    legible to someone who already knows the convention, and each label also
+    lets one appear without the other.
+    """
     session = snapshot.session
-    bits = [b for b in (session.framework, session.gpu_type) if b]
+    bits: list[str] = []
+    if session.gpu_type:
+        bits.append(session.gpu_type)
     if session.tp:
         bits.append(f"TP={session.tp}")
+    # Expert parallelism only means something above 1, and every dense model
+    # records EP=1, so showing it unconditionally would put a meaningless
+    # constant on the line of every non-MoE run.
+    if session.ep and session.ep > 1:
+        bits.append(f"EP={session.ep}")
     if session.conc:
         bits.append(f"conc={session.conc}")
-    if session.isl and session.osl:
-        bits.append(f"{session.isl}/{session.osl}")
+    if session.isl:
+        bits.append(f"ISL {session.isl}")
+    if session.osl:
+        bits.append(f"OSL {session.osl}")
+    if session.precision:
+        bits.append(session.precision)
+    return bits
 
-    model = session.model_name or "(unknown model)"
+
+def _header(snapshot: Snapshot, style: Style) -> list[str]:
+    """Render the identity and liveness header.
+
+    The model line answers "what is being optimized, on what stack" — the two
+    facts an operator needs before any number below means anything. It carries
+    the *derived* model name, because the manifest's ``model_name`` is usually
+    a Hugging Face snapshot sha and identifies nothing to a human.
+    """
+    session = snapshot.session
+
+    model = session.model_display or session.model_name or "(unknown model)"
+    model_text = truncate(model, 44)
+    stack = " ".join(bit for bit in (session.framework, session.framework_version) if bit)
+
     title = style.paint("HYPERLOOM", f"{BOLD};{ACCENT}")
-    line = f"{title}  {style.paint(truncate(model, 44), BOLD)}"
+    line = f"{title}  {style.paint(model_text, BOLD)}"
+    # Measured on the plain text: the painted string carries ANSI bytes that
+    # occupy no columns, and counting them would wrap a line that fits.
+    used = len("HYPERLOOM  ") + len(model_text)
+    if stack:
+        line += style.paint(f"  ·  {stack}", DIM)
+        used += len(f"  ·  {stack}")
+
+    lines = [line]
+    bits = _workload_bits(snapshot)
     if bits:
-        line += style.paint("  ·  " + " · ".join(bits), DIM)
+        tail = " · ".join(bits)
+        # Framework versions run long (``0.27.2rc1.dev150+g311b3513a``), so the
+        # workload wraps to its own line rather than being truncated away.
+        if used + len(f"  ·  {tail}") <= style.width:
+            lines[0] += style.paint(f"  ·  {tail}", DIM)
+        else:
+            lines.append("  " + style.paint(tail, DIM))
 
     label, color = _LIVENESS_LABEL[snapshot.liveness]
     status_bits = [style.paint(label, color)]
@@ -92,7 +139,7 @@ def _header(snapshot: Snapshot, style: Style) -> list[str]:
         status_bits.append(style.paint("no session lock found", DIM))
 
     meta = style.paint(f"tick {snapshot.tick} · cycle {snapshot.macro_cycle}", DIM)
-    return [line, f"  {'  '.join(status_bits)}   {meta}"]
+    return [*lines, f"  {'  '.join(status_bits)}   {meta}"]
 
 
 def _session_budget(snapshot: Snapshot, style: Style) -> list[str]:

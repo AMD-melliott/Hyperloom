@@ -226,6 +226,93 @@ def test_render_includes_phase_and_workload(session_dir: Path, frozen_clock) -> 
     assert "EXPLORE" in out
     assert "TP=8" in out
     assert "sglang" in out
+    # Labelled, not a bare "1024/1024": an unlabelled pair only reads to
+    # someone who already knows which end is which.
+    assert "ISL 1024" in out
+    assert "OSL 1024" in out
+    # ep=1 in the fixture: a dense model's expert parallelism is a constant and
+    # would only take up room.
+    assert "EP=" not in out
+
+
+def test_expert_parallelism_appears_only_when_it_is_doing_something(tmp_path: Path, frozen_clock) -> None:
+    """EP above 1 is real topology and belongs on the header."""
+    from .conftest import write_manifest
+
+    sd = tmp_path / "moe"
+    write_state(sd)
+    write_manifest(sd, ep=8)
+
+    assert "EP=8" in render_status(load_snapshot(sd, now_unix=frozen_clock), style=PLAIN)
+
+
+def test_header_shows_the_model_name_not_its_snapshot_sha(tmp_path: Path, frozen_clock) -> None:
+    """The reported header regression: a 40-char sha where the model should be.
+
+    Live output was ``HYPERLOOM  a4e59da52a7bc87ae7251dd5545c0dd437c44b68``,
+    which identifies nothing. The repo id and the framework version are both
+    available in the manifest and belong on that line.
+    """
+    from .conftest import write_manifest
+
+    sd = tmp_path / "hf"
+    write_state(sd)
+    write_manifest(
+        sd,
+        framework="vllm",
+        model_name="a4e59da52a7bc87ae7251dd5545c0dd437c44b68",
+        model_path=(
+            "/data/hf_home/hub/models--meta-models--Muse-Glimmer-30B/snapshots/a4e59da52a7bc87ae7251dd5545c0dd437c44b68"
+        ),
+        stack_fingerprint={"vllm": "0.27.2rc1.dev150+g311b3513a", "rocm": "7.2.3"},
+    )
+
+    out = render_status(load_snapshot(sd, now_unix=frozen_clock), style=PLAIN)
+    header = out.splitlines()[0]
+
+    assert "meta-models/Muse-Glimmer-30B" in header
+    assert "vllm 0.27.2rc1.dev150+g311b3513a" in header
+    assert "a4e59da52a7bc87ae" not in out
+
+
+def test_a_long_stack_string_wraps_the_workload_instead_of_truncating_it(tmp_path: Path, frozen_clock) -> None:
+    """Framework versions are long enough to push the workload off an 80-column line.
+
+    Losing ISL/OSL/conc to a truncation would trade one missing fact for
+    several, so the workload moves to its own line rather than being cut.
+    """
+    from .conftest import write_manifest
+
+    sd = tmp_path / "wrap"
+    write_state(sd)
+    write_manifest(
+        sd,
+        framework="vllm",
+        model_name="meta-models/Muse-Glimmer-30B",
+        stack_fingerprint={"vllm": "0.27.2rc1.dev150+g311b3513a"},
+    )
+
+    narrow = render_status(load_snapshot(sd, now_unix=frozen_clock), style=FormatStyle(width=80)).splitlines()
+    wide = render_status(load_snapshot(sd, now_unix=frozen_clock), style=FormatStyle(width=200)).splitlines()
+
+    assert "conc=64" in narrow[1] and "conc=64" not in narrow[0]
+    assert "conc=64" in wide[0], "a wide terminal should keep the header on one line"
+    # Whichever way it lays out, nothing is lost.
+    for lines in (narrow, wide):
+        assert all(bit in "\n".join(lines[:2]) for bit in ("ISL 1024", "OSL 1024", "TP=8", "fp8"))
+
+
+def test_header_survives_a_manifest_with_no_identity_at_all(tmp_path: Path, frozen_clock) -> None:
+    """An empty session must still render a header rather than raising."""
+    from .conftest import write_manifest
+
+    sd = tmp_path / "anonymous"
+    write_state(sd, model_name="", framework="", gpu_type="", tp=0, conc=0, isl=0, osl=0)
+    write_manifest(sd, model_name="", framework="", gpu_type="", tp=0, ep=0, workload={})
+
+    out = render_status(load_snapshot(sd, now_unix=frozen_clock), style=PLAIN)
+
+    assert out.splitlines()[0].strip() == "HYPERLOOM  (unknown model)"
 
 
 def test_render_flags_non_live_observation(tmp_path: Path) -> None:
@@ -370,6 +457,34 @@ def test_json_v1_keys_survive_the_v2_bump(session_dir: Path, frozen_clock) -> No
     assert "phase" in payload["status"]
     assert "session_elapsed_s" in payload["budget"]
     assert "tasks" in payload["resources"]
+    # model_name keeps carrying the manifest's literal value even though it is
+    # usually a snapshot sha; the readable name arrived as a new key beside it.
+    assert payload["session"]["model_name"] == "test-model"
+
+
+def test_json_carries_the_derived_identity(tmp_path: Path, frozen_clock) -> None:
+    """A machine consumer gets both the raw name and the resolved one."""
+    from .conftest import write_manifest
+
+    sd = tmp_path / "hf-json"
+    write_state(sd)
+    write_manifest(
+        sd,
+        framework="vllm",
+        model_name="a4e59da52a7bc87ae7251dd5545c0dd437c44b68",
+        model_path=(
+            "/data/hf_home/hub/models--meta-models--Muse-Glimmer-30B/snapshots/a4e59da52a7bc87ae7251dd5545c0dd437c44b68"
+        ),
+        stack_fingerprint={"vllm": "0.27.2rc1.dev150+g311b3513a"},
+    )
+
+    session = json.loads(render_json(load_snapshot(sd, now_unix=frozen_clock)))["session"]
+
+    assert session["model_name"] == "a4e59da52a7bc87ae7251dd5545c0dd437c44b68"
+    assert session["model_display"] == "meta-models/Muse-Glimmer-30B"
+    assert session["model_revision"] == "a4e59da52a7bc87ae7251dd5545c0dd437c44b68"
+    assert session["framework_version"] == "0.27.2rc1.dev150+g311b3513a"
+    assert session["model_path"].endswith("/snapshots/a4e59da52a7bc87ae7251dd5545c0dd437c44b68")
 
 
 def test_json_is_serializable_for_every_liveness(tmp_path: Path) -> None:

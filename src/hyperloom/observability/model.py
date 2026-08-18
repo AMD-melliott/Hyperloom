@@ -88,8 +88,21 @@ class SessionInfo:
 
     session_dir: str
     session_id: str | None = None
+    #: The manifest's literal ``model_name``. Frequently a 40-char commit sha
+    #: rather than a name — see :attr:`model_display`. Kept raw so a consumer
+    #: correlating against other Hyperloom artifacts still matches them.
     model_name: str | None = None
+    #: Human-meaningful model identity: ``org/repo`` recovered from
+    #: :attr:`model_path` when it points into a Hugging Face cache, else the
+    #: declared name. This is what a display should show.
+    model_display: str | None = None
+    model_path: str | None = None
+    #: Snapshot revision the run is pinned to, when the path reveals one.
+    model_revision: str | None = None
     framework: str | None = None
+    #: Version of :attr:`framework` from the manifest's stack fingerprint;
+    #: ``None`` when the probe could not determine one.
+    framework_version: str | None = None
     gpu_type: str | None = None
     tp: int | None = None
     ep: int | None = None

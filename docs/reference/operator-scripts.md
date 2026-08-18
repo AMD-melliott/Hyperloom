@@ -2,7 +2,7 @@
 myst:
     html_meta:
         "description": "Reference for Hyperloom operator scripts: status, dump_session_breakdown, dump_session_report, and event_counts. Use these utilities to monitor, inspect, export, and report on session data, including live GPU and inference-server metrics."
-        "keywords": "Hyperloom, operator scripts, session status, progress, monitoring, live metrics, amd-smi, GPU utilization, vLLM metrics, session breakdown, session report, event counts, LLM inference, AMD GPU, ROCm, debugging, observability, operator tools"
+        "keywords": "Hyperloom, operator scripts, session status, progress, monitoring, live metrics, amd-smi, GPU utilization, vLLM metrics, framework version, model identity, ISL, OSL, session breakdown, session report, event counts, LLM inference, AMD GPU, ROCm, debugging, observability, operator tools"
 ---
 # Hyperloom operator scripts
 
@@ -68,6 +68,8 @@ keeps the collection-health footer visible even when nothing is wrong.
 
 | Field | Meaning |
 |-------|---------|
+| Header line 1 | The model being optimized and the inference stack running it, e.g. `Qwen/Qwen3-14B-FP8 · vllm 0.27.2rc1.dev150+g311b3513a`. The model name is recovered from `model_path` when it points into a Hugging Face cache, because the manifest's `model_name` is then the snapshot commit sha. The framework version comes from the manifest's `stack_fingerprint`. |
+| Header line 2 | Topology and workload shape: `mi300x · TP=1 · conc=64 · ISL 1024 · OSL 1024 · bf16`. Folded onto line 1 when the terminal is wide enough. |
 | `running` / `working (loop quiet)` / `ended` / `liveness unknown` | State of the optimizer. `ended` means the session recorded a `stop_reason`. `working (loop quiet)` means the phase machine has not ticked recently but the session tree is still being written to — normally a long blocking dispatch such as a GEAK run, not a fault. |
 | `last tick ... ago` / `activity ... ago` | Age of the newest phase-machine write, and of the newest write anywhere in the session tree. A large gap between the two is the signature of a blocked phase. |
 | `KERNEL_AGENT → geak_e2e` | The long-running step the phase is blocked on, from `runtime/current_step.json`, with its elapsed time, budget, and kill deadline. |
@@ -107,6 +109,12 @@ is unchanged — and adds three blocks: `activity` (current step, running work,
 recent writes, GEAK progress), `metrics` (`gpu`, `server`), and `sources`
 (per-source outcome, age, error, consecutive failures). `rendered_at_unix`
 alongside `observed_at_unix` tells a consumer how old the underlying reading is.
+
+`session` also gained `model_display`, `model_path`, `model_revision`, and
+`framework_version`. `model_name` still carries the manifest's literal value —
+often a Hugging Face snapshot sha — so it remains a valid join key against other
+Hyperloom artifacts; `model_display` is the resolved `org/repo` and is what a
+human-facing consumer should read.
 
 ---
 
