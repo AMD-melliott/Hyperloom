@@ -20,7 +20,7 @@ Honesty rules this renderer enforces:
 
 from __future__ import annotations
 
-from ..model import Freshness, Liveness, Snapshot, SourceOutcome
+from ..model import CAP_EXIT_PHASES, Freshness, Liveness, Snapshot, SourceOutcome
 from .format import (
     ACCENT,
     BOLD,
@@ -163,8 +163,20 @@ def _session_budget(snapshot: Snapshot, style: Style) -> list[str]:
     ]
 
 
+_PHASE_ROW = "  {mark} {name} {elapsed:>8} {budget:>8} {cap:>8}  {used}"
+
+
 def _phase_chain(snapshot: Snapshot, style: Style) -> list[str]:
-    """Render one line per phase with cumulative spend against budget."""
+    """Render one line per phase with cumulative spend against its limits.
+
+    Both limits are shown because they are different things and only one of
+    them ends the phase. ``BUDGET`` is the charge-back allotment — the share of
+    the *remaining* session this phase was handed, which is also what its agent
+    is told it has left. ``CAP`` is the flat wall-clock ceiling. ``USED`` is
+    measured against whichever of the two this phase's exit check actually
+    consults, and names it, so a phase past its budget but nowhere near the cap
+    that rotates it does not read as an overrun.
+    """
     if not snapshot.phases:
         return []
 
@@ -172,8 +184,13 @@ def _phase_chain(snapshot: Snapshot, style: Style) -> list[str]:
     # a literal so a new phase name cannot silently shift every column.
     name_width = max((len(phase.name) for phase in snapshot.phases), default=0) + 1
 
-    header = "  {mark} {name} {elapsed:>8} {budget:>8} {used:>6}".format(
-        mark=" ", name="PHASE".ljust(name_width), elapsed="ELAPSED", budget="BUDGET", used="USED"
+    header = _PHASE_ROW.format(
+        mark=" ",
+        name="PHASE".ljust(name_width),
+        elapsed="ELAPSED",
+        budget="BUDGET",
+        cap="CAP",
+        used="USED",
     )
     # Columns are HH:MM rather than human-scaled: a fixed-width duration keeps
     # the numbers aligned down the column, which is what makes an overrun
@@ -193,16 +210,26 @@ def _phase_chain(snapshot: Snapshot, style: Style) -> list[str]:
         # the absolute cap is the honest comparison, so leave BUDGET blank
         # rather than implying a number the scheduler is not using.
         budget_text = clock(phase.budget_total_s, dash="") if phase.budget_total_s else ""
-        used_text = f"{used * 100:.0f}%" if used is not None else ""
-        used_color = WARN if (used is not None and used > 1.0) else ""
+        # PRELUDE and CLOSE have a computable cap that nothing checks; printing
+        # it would invite reading an unenforced number as a deadline.
+        cap_enforced = phase.name in CAP_EXIT_PHASES
+        cap_text = clock(phase.cap_s, dash="") if (phase.cap_s and cap_enforced) else ""
+        used_text = ""
+        if used is not None and phase.has_run:
+            # Naming the binding mechanism is the point of the column: without
+            # it, a reader has no way to tell which of the two numbers to their
+            # left the percentage refers to.
+            used_text = f"{used * 100:.0f}% of {phase.limit_kind}"
+        used_color = WARN if (used_text and used is not None and used > 1.0) else ""
 
         # Pad on the plain string, then colour. Padding a painted string would
         # count the ANSI escape bytes as visible width and misalign the column.
-        cells = "  {mark} {name} {elapsed:>8} {budget:>8} {used:>6}".format(
+        cells = _PHASE_ROW.format(
             mark=style.paint(mark, mark_color),
             name=style.paint(phase.name.ljust(name_width), "" if (phase.has_run or phase.is_current) else DIM),
             elapsed=clock(phase.elapsed_s, dash=style.dash),
             budget=budget_text,
+            cap=cap_text,
             used=style.paint(used_text, used_color) if used_text else "",
         )
         lines.append(cells.rstrip())
