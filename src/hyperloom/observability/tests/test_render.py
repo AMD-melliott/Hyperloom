@@ -362,7 +362,130 @@ def test_render_marks_budget_overrun(frozen_clock) -> None:
         result=ResultSummary(),
         _now_unix=frozen_clock,
     )
-    assert "200%" in render_status(snapshot, style=PLAIN)
+    assert "200% of budget" in render_status(snapshot, style=PLAIN)
+
+
+def test_framework_agent_is_measured_against_the_cap_that_rotates_it(frozen_clock) -> None:
+    """The reported false overrun: 133% of a budget that does not end the phase.
+
+    Observed on a live 16h ``--no-kernel`` run. FRAMEWORK_AGENT's charge-back
+    budget read 03:31 while the cap that actually triggers
+    ``framework_agent_budget_cap`` was 05:04, so at 04:30 elapsed the display
+    said 133% used and an operator went looking for a stuck phase. Nothing had
+    overrun; the phase was 89% of the way to the only limit that would move it.
+    """
+    snapshot = Snapshot(
+        phase="FRAMEWORK_AGENT",
+        phases=(
+            PhaseProgress(
+                name="FRAMEWORK_AGENT",
+                index=1,
+                is_current=True,
+                has_run=True,
+                elapsed_s=4.5 * 3600,
+                budget_total_s=3.517 * 3600,
+                cap_s=5.067 * 3600,
+            ),
+        ),
+        result=ResultSummary(),
+        _now_unix=frozen_clock,
+    )
+    row = next(line for line in render_status(snapshot, style=PLAIN).splitlines() if "FRAMEWORK_AGENT" in line)
+
+    assert "89% of cap" in row
+    assert "133%" not in row
+    # Both limits stay visible: the budget is still what the phase's own agent
+    # is told it has left, even though it is not what ends the phase.
+    assert "03:31" in row
+    assert "05:04" in row
+
+
+def test_a_budget_exit_phase_binds_on_whichever_limit_is_smaller(frozen_clock) -> None:
+    """EXPLORE exits on the budget *or* the cap, so the smaller one governs."""
+    from hyperloom.observability.model import BUDGET_EXIT_PHASES
+
+    assert "EXPLORE" in BUDGET_EXIT_PHASES
+
+    def explore(budget_s: float, cap_s: float) -> PhaseProgress:
+        return PhaseProgress(
+            name="EXPLORE",
+            index=2,
+            is_current=True,
+            has_run=True,
+            elapsed_s=3600.0,
+            budget_total_s=budget_s,
+            cap_s=cap_s,
+        )
+
+    budget_binds = explore(budget_s=2 * 3600, cap_s=10 * 3600)
+    cap_binds = explore(budget_s=10 * 3600, cap_s=2 * 3600)
+
+    assert budget_binds.limit_kind == "budget"
+    assert budget_binds.pct_used == pytest.approx(0.5)
+    assert cap_binds.limit_kind == "cap"
+    assert cap_binds.pct_used == pytest.approx(0.5)
+    # The charge-back ratio stays available for both, unchanged.
+    assert cap_binds.pct_of_budget == pytest.approx(0.1)
+
+
+def test_unenforced_caps_are_not_displayed(session_dir: Path, frozen_clock) -> None:
+    """PRELUDE and CLOSE have a computable cap that no exit check consults.
+
+    ``phase_cap_seconds`` answers for every phase, but only the four work
+    phases have an ``exit_normal_*`` helper that acts on it. Rendering PRELUDE
+    at "272% of cap" — as a live run did — points an operator at a limit
+    nothing will ever enforce.
+    """
+    snapshot = load_snapshot(session_dir, now_unix=frozen_clock)
+    assert snapshot is not None
+
+    prelude = next(phase for phase in snapshot.phases if phase.name == "PRELUDE")
+    # The upstream number is still carried; it is the display that withholds it.
+    assert prelude.cap_s is not None
+    assert prelude.limit_s is None
+    assert prelude.pct_used is None
+
+    rows = {
+        line.split()[1]: line
+        for line in render_status(snapshot, style=PLAIN).splitlines()
+        if len(line.split()) > 1 and line.split()[1] in {"PRELUDE", "CLOSE", "EXPLORE"}
+    }
+    assert "%" not in rows["PRELUDE"]
+    assert "%" not in rows["CLOSE"]
+    assert "%" in rows["EXPLORE"], "an enforced phase must still report its usage"
+
+
+def test_a_phase_that_has_not_started_reports_no_percentage(frozen_clock) -> None:
+    """ "0% of cap" for an unstarted phase is noise, not information."""
+    snapshot = Snapshot(
+        phase="EXPLORE",
+        phases=(
+            PhaseProgress(
+                name="SWEEP",
+                index=4,
+                is_current=False,
+                has_run=False,
+                elapsed_s=0.0,
+                cap_s=3600.0,
+            ),
+        ),
+        result=ResultSummary(),
+        _now_unix=frozen_clock,
+    )
+    row = next(line for line in render_status(snapshot, style=PLAIN).splitlines() if "SWEEP" in line)
+
+    assert "0%" not in row
+    # The allotment ahead is still worth showing.
+    assert "01:00" in row
+
+
+def test_an_unbounded_phase_reports_no_percentage(frozen_clock) -> None:
+    """With neither limit set there is nothing to be a percentage of."""
+    phase = PhaseProgress(name="EXPLORE", index=2, is_current=True, has_run=True, elapsed_s=60.0)
+
+    assert phase.limit_s is None
+    assert phase.limit_kind is None
+    assert phase.pct_used is None
 
 
 def test_render_unbudgeted_session(frozen_clock) -> None:

@@ -73,8 +73,10 @@ keeps the collection-health footer visible even when nothing is wrong.
 | `running` / `working (loop quiet)` / `ended` / `liveness unknown` | State of the optimizer. `ended` means the session recorded a `stop_reason`. `working (loop quiet)` means the phase machine has not ticked recently but the session tree is still being written to — normally a long blocking dispatch such as a GEAK run, not a fault. |
 | `last tick ... ago` / `activity ... ago` | Age of the newest phase-machine write, and of the newest write anywhere in the session tree. A large gap between the two is the signature of a blocked phase. |
 | `KERNEL_AGENT → geak_e2e` | The long-running step the phase is blocked on, from `runtime/current_step.json`, with its elapsed time, budget, and kill deadline. |
-| `ELAPSED` / `BUDGET` | `HH:MM`, hours not wrapped at 24. `ELAPSED` is cumulative across **all** macro cycles, not just the current entry — phases repeat, since SWEEP loops back to EXPLORE. |
-| `USED` | Shown for the running phase only. The budget is charge-back: a phase receives its share of the time *still remaining*, so an overrunning earlier phase shrinks every later one. Above 100% is a real overrun and is reported, not clamped. |
+| `ELAPSED` | `HH:MM`, hours not wrapped at 24. Cumulative across **all** macro cycles, not just the current entry — phases repeat, since SWEEP loops back to EXPLORE. |
+| `BUDGET` | The charge-back allotment for the running phase: its share of the time *still remaining*, renormalized over itself and the phases ahead, so an overrunning earlier phase shrinks every later one. This is also the figure the phase's own agent is told it has left. |
+| `CAP` | The flat wall-clock ceiling, `min(max_minutes × pct, 24h × pct)`. Unlike `BUDGET` it does not move. Blank for PRELUDE and CLOSE, which have no exit check that consults it. |
+| `USED` | Elapsed against whichever limit this phase's exit check actually consults, and which one that is. EXPLORE, KERNEL_AGENT and SWEEP exit on the budget **or** the cap, so the smaller binds; FRAMEWORK_AGENT exits on the cap alone. Above 100% is a real overrun and is reported, not clamped. |
 | `GPU (host-wide)` | Utilization, VRAM and power from `amd-smi`. **Host-wide**: these come from the node's driver and include every tenant, so on a shared box they are not attributable to this session. |
 | `vLLM` | Live counters from the server's `/metrics`. Absent during KERNEL_AGENT, when no server is running. Throughput needs two samples, so it shows `—` on the first frame. |
 | `WORK` | What sub-agents are doing: GEAK round/engineer progress, and each live run's heartbeat `note` — a short description the agent writes itself every few minutes. |
@@ -109,6 +111,11 @@ is unchanged — and adds three blocks: `activity` (current step, running work,
 recent writes, GEAK progress), `metrics` (`gpu`, `server`), and `sources`
 (per-source outcome, age, error, consecutive failures). `rendered_at_unix`
 alongside `observed_at_unix` tells a consumer how old the underlying reading is.
+
+Each `phases[]` entry carries `limit_s` and `limit_kind` (`"cap"` or
+`"budget"`) alongside `budget_total_s` and `cap_s`. `pct_used` is measured
+against `limit_s`; `pct_of_budget` is the charge-back ratio on its own. Both are
+`null` for PRELUDE and CLOSE, whose caps are computable but unenforced.
 
 `session` also gained `model_display`, `model_path`, `model_revision`, and
 `framework_version`. `model_name` still carries the manifest's literal value —

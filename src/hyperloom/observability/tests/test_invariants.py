@@ -115,6 +115,63 @@ def test_ray_obs_id_base_matches_orchestrator() -> None:
     assert RAY_OBS_ID_BASE == _RAY_OBS_ID_BASE
 
 
+def test_exit_limit_sets_match_the_orchestrator() -> None:
+    """The mirrored exit-limit sets must track which phases really check them.
+
+    ``PhaseProgress.pct_used`` measures against whichever limit ends the phase,
+    which requires knowing that EXPLORE/KERNEL_AGENT/SWEEP consult
+    ``phase_budget_remaining_seconds`` while FRAMEWORK_AGENT exits on the
+    absolute cap alone — and that PRELUDE and CLOSE have no exit check at all,
+    so their computable caps are never enforced.
+
+    That is policy living in another module, so it is derived from the source
+    here rather than trusted: if an ``exit_normal_*`` helper starts or stops
+    consulting a limit, this fails instead of the display quietly misreporting
+    an overrun (or hiding one).
+    """
+    import inspect
+    import re
+
+    from hyperloom.orchestrator.phases import machine_state
+
+    from ..model import BUDGET_EXIT_PHASES, CAP_EXIT_PHASES
+
+    # The helper for KERNEL_AGENT is exit_normal_kernel, so the mapping is
+    # spelled out rather than derived from the phase name.
+    helpers = {
+        "PRELUDE": "exit_normal_prelude",
+        "FRAMEWORK_AGENT": "exit_normal_framework_agent",
+        "EXPLORE": "exit_normal_explore",
+        "KERNEL_AGENT": "exit_normal_kernel",
+        "SWEEP": "exit_normal_sweep",
+        "CLOSE": "exit_normal_close",
+    }
+    checks_cap: set[str] = set()
+    checks_budget: set[str] = set()
+    for phase, helper_name in helpers.items():
+        helper = getattr(machine_state, helper_name, None)
+        if helper is None:
+            # No exit helper means no enforced limit, which is the claim being
+            # made about PRELUDE and CLOSE.
+            assert phase not in CAP_EXIT_PHASES and phase not in BUDGET_EXIT_PHASES
+            continue
+        # Strip the docstring: it discusses caps and budgets in prose.
+        body = re.sub(r'""".*?"""', "", inspect.getsource(helper), count=1, flags=re.DOTALL)
+        if "phase_cap_exceeded(" in body:
+            checks_cap.add(phase)
+        if "phase_budget_remaining_seconds(" in body:
+            checks_budget.add(phase)
+
+    assert checks_cap == set(CAP_EXIT_PHASES), (
+        f"machine_state enforces a cap for {sorted(checks_cap)}, "
+        f"but model.CAP_EXIT_PHASES says {sorted(CAP_EXIT_PHASES)}"
+    )
+    assert checks_budget == set(BUDGET_EXIT_PHASES), (
+        f"machine_state exit checks consult the budget for {sorted(checks_budget)}, "
+        f"but model.BUDGET_EXIT_PHASES says {sorted(BUDGET_EXIT_PHASES)}"
+    )
+
+
 def test_snapshot_satisfies_machine_state_contract(session_dir: Path, frozen_clock) -> None:
     """The snapshot must be consumable by the real phase-machine helpers.
 

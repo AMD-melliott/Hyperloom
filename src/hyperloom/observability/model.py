@@ -116,6 +116,19 @@ class SessionInfo:
     started_at: str | None = None
 
 
+#: Phases whose ``exit_normal_*`` helper calls ``phase_cap_exceeded``. PRELUDE
+#: and CLOSE have no such helper, so their caps are computable but *unenforced*
+#: — reporting a phase as over a limit nothing acts on is the same misdirection
+#: as hiding a real overrun.
+CAP_EXIT_PHASES = frozenset({"FRAMEWORK_AGENT", "EXPLORE", "KERNEL_AGENT", "SWEEP"})
+
+#: Phases whose ``exit_normal_*`` helper additionally calls
+#: ``phase_budget_remaining_seconds``. FRAMEWORK_AGENT exits on the absolute cap
+#: alone, so measuring it against the (smaller) charge-back budget reports an
+#: overrun that will never end the phase.
+BUDGET_EXIT_PHASES = frozenset({"EXPLORE", "KERNEL_AGENT", "SWEEP"})
+
+
 @dataclass(frozen=True)
 class PhaseProgress:
     """One phase of the pipeline, with cumulative spend against its allotment.
@@ -123,6 +136,20 @@ class PhaseProgress:
     ``elapsed_s`` sums **every** entry of the phase across macro cycles, not
     just the current one — phases are re-entered on each cycle, and a per-entry
     reading under-reports by a factor of the cycle count.
+
+    Two different limits apply, and conflating them misreports a healthy phase
+    as overrunning:
+
+    ``budget_total_s``
+        The charge-back allotment: this phase's share of the time *still
+        remaining*, renormalized over itself and the phases ahead. It shrinks
+        as the run progresses and is what the phase's agent is told it has.
+    ``cap_s``
+        A flat wall-clock ceiling, ``min(max_minutes * pct, 24h * pct)``. It
+        does not move.
+
+    Which one actually ends the phase depends on the phase — see
+    :data:`BUDGET_EXIT_PHASES` and :attr:`limit_s`.
     """
 
     name: str
@@ -135,12 +162,64 @@ class PhaseProgress:
     cap_s: float | None = None
 
     @property
-    def pct_used(self) -> float | None:
-        """Fraction of this phase's budget consumed, or ``None`` when unbudgeted.
+    def limit_s(self) -> float | None:
+        """Seconds this phase gets before the machine forces it out.
+
+        The smaller of the limits that this phase's exit check actually
+        consults, which is the only number an "am I about to be cut off?"
+        reading can honestly be taken against.
 
         Returns:
-            Ratio of elapsed to allotted time. May exceed ``1.0`` — an overrun
-            is reported, not clamped.
+            The binding limit in seconds, or ``None`` when nothing enforces one
+            — including for PRELUDE and CLOSE, whose caps are computable but
+            never checked.
+        """
+        candidates: list[float | None] = []
+        if self.name in CAP_EXIT_PHASES:
+            candidates.append(self.cap_s)
+        if self.name in BUDGET_EXIT_PHASES:
+            candidates.append(self.budget_total_s)
+        applicable = [value for value in candidates if value is not None and value > 0]
+        return min(applicable) if applicable else None
+
+    @property
+    def limit_kind(self) -> str | None:
+        """Name of the mechanism that will end this phase: ``"cap"`` or ``"budget"``.
+
+        Returns:
+            The binding mechanism, or ``None`` when nothing bounds the phase.
+        """
+        limit = self.limit_s
+        if limit is None:
+            return None
+        return "budget" if limit == self.budget_total_s else "cap"
+
+    @property
+    def pct_used(self) -> float | None:
+        """Fraction of the *binding* limit consumed, or ``None`` when unbounded.
+
+        Measured against :attr:`limit_s` rather than :attr:`budget_total_s`: a
+        FRAMEWORK_AGENT phase reading 133% of its charge-back budget is not
+        overrunning anything if the cap that actually rotates it is still an
+        hour out, and reporting it as an overrun sends an operator looking for
+        a fault that does not exist.
+
+        Returns:
+            Ratio of elapsed to the binding limit. May exceed ``1.0`` — an
+            overrun is reported, not clamped.
+        """
+        limit = self.limit_s
+        if limit is None:
+            return None
+        return self.elapsed_s / limit
+
+    @property
+    def pct_of_budget(self) -> float | None:
+        """Fraction of the charge-back allotment consumed, or ``None``.
+
+        Retained separately from :attr:`pct_used` because the allotment drives
+        what the phase's own agent is told about its remaining time, so it is
+        still worth reporting even where it does not trigger the exit.
         """
         if self.budget_total_s is None or self.budget_total_s <= 0:
             return None

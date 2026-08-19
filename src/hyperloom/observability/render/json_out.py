@@ -100,7 +100,12 @@ def to_dict(snapshot: Snapshot) -> dict[str, Any]:
                 "budget_total_s": phase.budget_total_s,
                 "budget_remaining_s": phase.budget_remaining_s,
                 "cap_s": phase.cap_s,
+                # The limit that actually ends the phase, and which of the two
+                # it is. pct_used is measured against limit_s, not budget_s.
+                "limit_s": phase.limit_s,
+                "limit_kind": phase.limit_kind,
                 "pct_used": phase.pct_used,
+                "pct_of_budget": phase.pct_of_budget,
             }
             for phase in snapshot.phases
         ],
