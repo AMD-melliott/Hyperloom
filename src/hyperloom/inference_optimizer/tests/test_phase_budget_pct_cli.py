@@ -176,3 +176,55 @@ def test_redistribute_all_enabled_is_noop_and_idempotent() -> None:
     assert once == base
     twice = redistribute_budget_pct(once, kernel_enabled=True, optimize_enabled=True)
     assert twice == once
+
+
+def test_a_disabled_phase_survives_normalization() -> None:
+    """Zero means disabled, and must not be read back as a missing override.
+
+    ``normalize_budget_pct`` treated ``0.0`` as out of range and restored the
+    phase's library default, which silently undid ``redistribute_budget_pct``.
+    On a ``--no-kernel`` run the persisted map came back with KERNEL_AGENT at
+    0.35 and summed to 1.35; the phantom share then inflated the charge-back
+    denominator, shrinking every remaining phase's allotment by about a quarter.
+    """
+    disabled = redistribute_budget_pct(
+        dict(DEFAULT_PHASE_BUDGET_PCT),
+        kernel_enabled=False,
+        optimize_enabled=True,
+    )
+    assert disabled[PHASE_KERNEL_AGENT] == 0.0
+
+    round_tripped = normalize_budget_pct(disabled)
+
+    assert round_tripped[PHASE_KERNEL_AGENT] == 0.0
+    assert round_tripped == disabled, "normalization must be a fixed point on a redistributed map"
+    assert sum(round_tripped.values()) == pytest.approx(1.0)
+
+
+def test_redistribute_is_idempotent_across_a_normalize_round_trip() -> None:
+    """State is persisted and reloaded every tick, so the cycle must not drift.
+
+    ``redistribute_budget_pct`` documents itself as idempotent, but the live
+    path runs it on a map that has been through ``normalize_budget_pct`` on the
+    way back out of ``state.json`` — which is where the drift actually happened.
+    """
+    base = dict(DEFAULT_PHASE_BUDGET_PCT)
+    settled = redistribute_budget_pct(base, kernel_enabled=False, optimize_enabled=True)
+
+    for _ in range(3):
+        settled = redistribute_budget_pct(
+            normalize_budget_pct(settled),
+            kernel_enabled=False,
+            optimize_enabled=True,
+        )
+
+    assert settled == redistribute_budget_pct(base, kernel_enabled=False, optimize_enabled=True)
+    assert sum(settled.values()) == pytest.approx(1.0)
+
+
+def test_an_out_of_range_override_is_still_rejected() -> None:
+    """Widening the floor to include 0.0 must not let nonsense through."""
+    for bad in (-0.1, 1.5, float("nan"), "abc", None):
+        assert normalize_budget_pct({PHASE_FRAMEWORK_AGENT: bad})[PHASE_FRAMEWORK_AGENT] == pytest.approx(
+            DEFAULT_PHASE_BUDGET_PCT[PHASE_FRAMEWORK_AGENT]
+        )
