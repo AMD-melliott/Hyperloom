@@ -172,6 +172,57 @@ def test_exit_limit_sets_match_the_orchestrator() -> None:
     )
 
 
+def test_session_discovery_matches_what_the_producer_writes(tmp_path: Path, monkeypatch) -> None:
+    """Auto-discovery must find a directory the producer actually created.
+
+    ``find_latest_per_session_dir`` recognises per-session directories by the
+    shape of their name, so it and ``make_session_dir`` encode one convention in
+    two places. When the producer grew a ``-<rand8>`` suffix, a reader still
+    requiring the bare 16-character stamp would match nothing — and "no session
+    found" is indistinguishable from there being none, which is what this pins.
+
+    Driven through the real producer rather than a fabricated name, so a future
+    change to the layout fails here instead of on an operator's terminal.
+    """
+    from hyperloom.inference_optimizer.session.paths import (
+        ENV_CURRENT_SESSION_DIR,
+        find_latest_per_session_dir,
+        make_session_dir,
+    )
+
+    monkeypatch.setenv("USER_DATA_PATH", str(tmp_path))
+    monkeypatch.delenv(ENV_CURRENT_SESSION_DIR, raising=False)
+
+    created = make_session_dir("meta-models/Muse-Glimmer-30B")
+
+    assert find_latest_per_session_dir("meta-models/Muse-Glimmer-30B") == created
+    assert find_latest_per_session_dir() == created, "unfiltered scan missed the session"
+
+
+def test_session_discovery_picks_the_newest_by_stamp_not_mtime(tmp_path: Path, monkeypatch) -> None:
+    """A resume touching an older session must not make it look newest.
+
+    Selection is a lexical sort on the leading fixed-width timestamp precisely
+    so that writing into an older session does not re-order it. Sorting by mtime
+    is the tempting "fix" here, and would point the status view at whichever
+    session was written to last rather than the one that started last.
+    """
+    import os
+
+    from hyperloom.inference_optimizer.session.paths import find_latest_per_session_dir
+
+    monkeypatch.setenv("USER_DATA_PATH", str(tmp_path))
+    older = tmp_path / "model" / "20260101T000000Z-aaaaaaaa"
+    newer = tmp_path / "model" / "20260817T000000Z-bbbbbbbb"
+    for path in (older, newer):
+        path.mkdir(parents=True)
+    # Make the older session the most recently written one.
+    os.utime(older, (2_000_000_000, 2_000_000_000))
+    os.utime(newer, (1_000_000_000, 1_000_000_000))
+
+    assert find_latest_per_session_dir() == newer
+
+
 def test_snapshot_satisfies_machine_state_contract(session_dir: Path, frozen_clock) -> None:
     """The snapshot must be consumable by the real phase-machine helpers.
 

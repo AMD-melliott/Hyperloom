@@ -85,6 +85,12 @@ _WORKSPACE_SKELETON: tuple[str, ...] = (
 # on ``:`` / ``/`` / whitespace).
 _MODEL_BASENAME_SANITIZE = re.compile(r"[^A-Za-z0-9._-]+")
 
+# Per-session directory names as written by make_session_dir: a fixed-width
+# ``%Y%m%dT%H%M%SZ`` stamp, plus the random suffix that keeps two same-second
+# launches of one model apart. The suffix is optional here because sessions
+# created before it existed carry the bare stamp and must stay discoverable.
+_SESSION_DIR_NAME = re.compile(r"^\d{8}T\d{6}Z(-[0-9a-f]{8})?$")
+
 
 class AssetRootNotFound(RuntimeError):
     """Raised when an explicit asset root override points at a missing dir."""
@@ -167,6 +173,44 @@ def session_dir() -> Path:
     if pinned:
         return Path(pinned)
     return workspace_root()
+
+
+def find_latest_per_session_dir(
+    model_name: str | os.PathLike[str] | None = None,
+) -> Path | None:
+    """Latest per-session subdir under :func:`workspace_root`.
+
+    Selects on the ``%Y%m%dT%H%M%SZ`` stamp in the directory name, by lexical
+    sort rather than mtime: the stamp is fixed-width and leads the name, so
+    lexical order *is* chronological, and unlike mtime it is not perturbed by a
+    resume writing into an older session.
+
+    Names are matched against :data:`_SESSION_DIR_NAME` rather than by length,
+    so this keeps tracking :func:`make_session_dir` as that shape changes. The
+    two must agree or auto-discovery silently finds nothing.
+
+    Args:
+        model_name: Restrict the scan to one model's subtree, or ``None`` to
+            scan every model basename.
+
+    Returns:
+        The latest per-session directory, or ``None`` when none match.
+    """
+    ws = workspace_root()
+    if not ws.is_dir():
+        return None
+    if model_name:
+        model_root = ws / _sanitize_model_basename(model_name)
+        roots = [model_root] if model_root.is_dir() else []
+    else:
+        # The name check below already rejects the workspace-shared subdirs;
+        # skipping them here just avoids walking them.
+        shared = {sub.split("/", 1)[0] for sub in _WORKSPACE_SKELETON}
+        roots = [d for d in ws.iterdir() if d.is_dir() and d.name not in shared]
+    candidates = [p for root in roots for p in root.iterdir() if p.is_dir() and _SESSION_DIR_NAME.match(p.name)]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.name)
 
 
 def make_session_dir(model_name: str | os.PathLike[str] | None = None) -> Path:
