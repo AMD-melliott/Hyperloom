@@ -11,6 +11,7 @@ matter are as much about what it must *not* do as what it records.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from hyperloom.inference_optimizer.session.current_step import (
@@ -102,12 +103,13 @@ def test_observability_reader_sees_what_the_producer_writes(tmp_path: Path) -> N
     """
     from hyperloom.observability.sources.current_step import CurrentStepSource
 
+    deadline_unix = time.time() + 3600.0
     with current_step(
         tmp_path,
         phase="KERNEL_AGENT",
         step="geak_e2e",
         detail="GEAK e2e (from=EXPLORE)",
-        deadline_unix=1_786_990_837.0,
+        deadline_unix=deadline_unix,
         artifacts={"out_dir": "/session/geak"},
     ):
         result = CurrentStepSource().read(tmp_path)
@@ -117,7 +119,7 @@ def test_observability_reader_sees_what_the_producer_writes(tmp_path: Path) -> N
     assert step.phase == "KERNEL_AGENT"
     assert step.step == "geak_e2e"
     assert step.detail == "GEAK e2e (from=EXPLORE)"
-    assert step.deadline_unix == 1_786_990_837.0
+    assert step.deadline_unix == deadline_unix
     assert step.artifacts == (("out_dir", "/session/geak"),)
     assert step.budget_s() is not None and step.budget_s() > 0
 
