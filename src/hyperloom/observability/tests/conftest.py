@@ -49,11 +49,11 @@ def write_state(session_dir: Path, **overrides) -> Path:
     """
     session_dir.mkdir(parents=True, exist_ok=True)
     state = {
-        "phase": "EXPLORE",
+        "phase": "FRAMEWORK_AGENT",
         "phase_started_unix": FROZEN_NOW - 1800.0,
         "phase_started_ts": "2026-08-06T03:30:00+00:00",
-        "phase_elapsed_totals": {"PRELUDE": 3600.0, "EXPLORE": 5400.0},
-        "phase_budget_pct": {"PRELUDE": 0.03, "EXPLORE": 0.45, "KERNEL_AGENT": 0.35},
+        "phase_elapsed_totals": {"PRELUDE": 3600.0, "FRAMEWORK_AGENT": 5400.0},
+        "phase_budget_pct": {"PRELUDE": 0.03, "FRAMEWORK_AGENT": 0.45, "KERNEL_AGENT": 0.35},
         "max_minutes": 720,
         "cycle_minutes": 0.0,
         "start_ts": SESSION_START_TS,
@@ -96,7 +96,7 @@ def write_state(session_dir: Path, **overrides) -> Path:
             },
             {
                 "from_phase": "PRELUDE",
-                "to_phase": "EXPLORE",
+                "to_phase": "FRAMEWORK_AGENT",
                 "reason": "prelude_done",
                 "evidence": {},
                 "ts": "2026-08-06T01:00:00+00:00",

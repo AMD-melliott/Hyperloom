@@ -120,13 +120,13 @@ class SessionInfo:
 #: and CLOSE have no such helper, so their caps are computable but *unenforced*
 #: — reporting a phase as over a limit nothing acts on is the same misdirection
 #: as hiding a real overrun.
-CAP_EXIT_PHASES = frozenset({"FRAMEWORK_AGENT", "EXPLORE", "KERNEL_AGENT", "SWEEP"})
+CAP_EXIT_PHASES = frozenset({"FRAMEWORK_AGENT", "KERNEL_AGENT", "SWEEP"})
 
 #: Phases whose ``exit_normal_*`` helper additionally calls
-#: ``phase_budget_remaining_seconds``. FRAMEWORK_AGENT exits on the absolute cap
-#: alone, so measuring it against the (smaller) charge-back budget reports an
-#: overrun that will never end the phase.
-BUDGET_EXIT_PHASES = frozenset({"EXPLORE", "KERNEL_AGENT", "SWEEP"})
+#: ``phase_budget_remaining_seconds``. FRAMEWORK_AGENT's exit helper
+#: (``exit_normal_optimize``) now folds in the retired EXPLORE phase's
+#: config-search arm, so it consults the budget too, not the absolute cap alone.
+BUDGET_EXIT_PHASES = frozenset({"FRAMEWORK_AGENT", "KERNEL_AGENT", "SWEEP"})
 
 
 @dataclass(frozen=True)

@@ -228,7 +228,7 @@ def test_legacy_state_reconstructs_totals_from_history(tmp_path: Path, frozen_cl
             },
             {
                 "from_phase": "PRELUDE",
-                "to_phase": "EXPLORE",
+                "to_phase": "FRAMEWORK_AGENT",
                 "reason": "prelude_done",
                 "evidence": {},
                 "ts_unix": SESSION_START_UNIX + 1800.0,

@@ -119,10 +119,10 @@ def test_exit_limit_sets_match_the_orchestrator() -> None:
     """The mirrored exit-limit sets must track which phases really check them.
 
     ``PhaseProgress.pct_used`` measures against whichever limit ends the phase,
-    which requires knowing that EXPLORE/KERNEL_AGENT/SWEEP consult
-    ``phase_budget_remaining_seconds`` while FRAMEWORK_AGENT exits on the
-    absolute cap alone — and that PRELUDE and CLOSE have no exit check at all,
-    so their computable caps are never enforced.
+    which requires knowing that FRAMEWORK_AGENT/KERNEL_AGENT/SWEEP consult both
+    ``phase_cap_exceeded`` and ``phase_budget_remaining_seconds`` — and that
+    PRELUDE and CLOSE have no exit check at all, so their computable caps are
+    never enforced.
 
     That is policy living in another module, so it is derived from the source
     here rather than trusted: if an ``exit_normal_*`` helper starts or stops
@@ -136,12 +136,12 @@ def test_exit_limit_sets_match_the_orchestrator() -> None:
 
     from ..model import BUDGET_EXIT_PHASES, CAP_EXIT_PHASES
 
-    # The helper for KERNEL_AGENT is exit_normal_kernel, so the mapping is
-    # spelled out rather than derived from the phase name.
+    # The helper names don't all follow the phase name (FRAMEWORK_AGENT's is
+    # exit_normal_optimize, having absorbed the retired EXPLORE phase's
+    # config-search arm), so the mapping is spelled out rather than derived.
     helpers = {
         "PRELUDE": "exit_normal_prelude",
-        "FRAMEWORK_AGENT": "exit_normal_framework_agent",
-        "EXPLORE": "exit_normal_explore",
+        "FRAMEWORK_AGENT": "exit_normal_optimize",
         "KERNEL_AGENT": "exit_normal_kernel",
         "SWEEP": "exit_normal_sweep",
         "CLOSE": "exit_normal_close",
@@ -241,7 +241,7 @@ def test_snapshot_satisfies_machine_state_contract(session_dir: Path, frozen_clo
 
     assert machine_state.phase_cumulative_seconds(snapshot, phase="PRELUDE", now_unix=frozen_clock()) > 0
     assert machine_state.session_remaining_seconds(snapshot, now_unix=frozen_clock()) is not None
-    assert machine_state.normalize_budget_pct(snapshot.phase_budget_pct)["EXPLORE"] == 0.45
+    assert machine_state.normalize_budget_pct(snapshot.phase_budget_pct)["FRAMEWORK_AGENT"] == 0.45
 
 
 def test_read_only_invariant_covers_the_new_sources(tmp_path: Path, frozen_clock) -> None:

@@ -223,7 +223,7 @@ def test_render_includes_phase_and_workload(session_dir: Path, frozen_clock) -> 
 
     assert "HYPERLOOM" in out
     assert "test-model" in out
-    assert "EXPLORE" in out
+    assert "FRAMEWORK_AGENT" in out
     assert "TP=8" in out
     assert "sglang" in out
     # Labelled, not a bare "1024/1024": an unlabelled pair only reads to
@@ -348,10 +348,10 @@ def test_render_shows_warnings(tmp_path: Path, frozen_clock) -> None:
 def test_render_marks_budget_overrun(frozen_clock) -> None:
     """A phase past its budget shows a percentage above 100."""
     snapshot = Snapshot(
-        phase="EXPLORE",
+        phase="KERNEL_AGENT",
         phases=(
             PhaseProgress(
-                name="EXPLORE",
+                name="KERNEL_AGENT",
                 index=2,
                 is_current=True,
                 has_run=True,
@@ -365,14 +365,13 @@ def test_render_marks_budget_overrun(frozen_clock) -> None:
     assert "200% of budget" in render_status(snapshot, style=PLAIN)
 
 
-def test_framework_agent_is_measured_against_the_cap_that_rotates_it(frozen_clock) -> None:
-    """The reported false overrun: 133% of a budget that does not end the phase.
+def test_framework_agent_reports_whichever_limit_actually_binds(frozen_clock) -> None:
+    """FRAMEWORK_AGENT's exit helper now checks budget *and* cap.
 
-    Observed on a live 16h ``--no-kernel`` run. FRAMEWORK_AGENT's charge-back
-    budget read 03:31 while the cap that actually triggers
-    ``framework_agent_budget_cap`` was 05:04, so at 04:30 elapsed the display
-    said 133% used and an operator went looking for a stuck phase. Nothing had
-    overrun; the phase was 89% of the way to the only limit that would move it.
+    ``exit_normal_optimize`` absorbed the retired EXPLORE phase's config-search
+    arm, so it now exits on budget exhaustion (``optimize_phase_budget_exhausted``)
+    before ever reaching the absolute cap (``optimize_budget_cap``). The display
+    must bind on whichever limit is smaller, same as any other budget-exit phase.
     """
     snapshot = Snapshot(
         phase="FRAMEWORK_AGENT",
@@ -392,23 +391,22 @@ def test_framework_agent_is_measured_against_the_cap_that_rotates_it(frozen_cloc
     )
     row = next(line for line in render_status(snapshot, style=PLAIN).splitlines() if "FRAMEWORK_AGENT" in line)
 
-    assert "89% of cap" in row
-    assert "133%" not in row
-    # Both limits stay visible: the budget is still what the phase's own agent
-    # is told it has left, even though it is not what ends the phase.
+    assert "128% of budget" in row
+    assert "89% of cap" not in row
+    # Both limits stay visible even though only the smaller one binds.
     assert "03:31" in row
     assert "05:04" in row
 
 
 def test_a_budget_exit_phase_binds_on_whichever_limit_is_smaller(frozen_clock) -> None:
-    """EXPLORE exits on the budget *or* the cap, so the smaller one governs."""
+    """KERNEL_AGENT exits on the budget *or* the cap, so the smaller one governs."""
     from hyperloom.observability.model import BUDGET_EXIT_PHASES
 
-    assert "EXPLORE" in BUDGET_EXIT_PHASES
+    assert "KERNEL_AGENT" in BUDGET_EXIT_PHASES
 
-    def explore(budget_s: float, cap_s: float) -> PhaseProgress:
+    def kernel_agent(budget_s: float, cap_s: float) -> PhaseProgress:
         return PhaseProgress(
-            name="EXPLORE",
+            name="KERNEL_AGENT",
             index=2,
             is_current=True,
             has_run=True,
@@ -417,8 +415,8 @@ def test_a_budget_exit_phase_binds_on_whichever_limit_is_smaller(frozen_clock) -
             cap_s=cap_s,
         )
 
-    budget_binds = explore(budget_s=2 * 3600, cap_s=10 * 3600)
-    cap_binds = explore(budget_s=10 * 3600, cap_s=2 * 3600)
+    budget_binds = kernel_agent(budget_s=2 * 3600, cap_s=10 * 3600)
+    cap_binds = kernel_agent(budget_s=10 * 3600, cap_s=2 * 3600)
 
     assert budget_binds.limit_kind == "budget"
     assert budget_binds.pct_used == pytest.approx(0.5)
@@ -448,17 +446,17 @@ def test_unenforced_caps_are_not_displayed(session_dir: Path, frozen_clock) -> N
     rows = {
         line.split()[1]: line
         for line in render_status(snapshot, style=PLAIN).splitlines()
-        if len(line.split()) > 1 and line.split()[1] in {"PRELUDE", "CLOSE", "EXPLORE"}
+        if len(line.split()) > 1 and line.split()[1] in {"PRELUDE", "CLOSE", "FRAMEWORK_AGENT"}
     }
     assert "%" not in rows["PRELUDE"]
     assert "%" not in rows["CLOSE"]
-    assert "%" in rows["EXPLORE"], "an enforced phase must still report its usage"
+    assert "%" in rows["FRAMEWORK_AGENT"], "an enforced phase must still report its usage"
 
 
 def test_a_phase_that_has_not_started_reports_no_percentage(frozen_clock) -> None:
     """ "0% of cap" for an unstarted phase is noise, not information."""
     snapshot = Snapshot(
-        phase="EXPLORE",
+        phase="KERNEL_AGENT",
         phases=(
             PhaseProgress(
                 name="SWEEP",
@@ -481,7 +479,7 @@ def test_a_phase_that_has_not_started_reports_no_percentage(frozen_clock) -> Non
 
 def test_an_unbounded_phase_reports_no_percentage(frozen_clock) -> None:
     """With neither limit set there is nothing to be a percentage of."""
-    phase = PhaseProgress(name="EXPLORE", index=2, is_current=True, has_run=True, elapsed_s=60.0)
+    phase = PhaseProgress(name="KERNEL_AGENT", index=2, is_current=True, has_run=True, elapsed_s=60.0)
 
     assert phase.limit_s is None
     assert phase.limit_kind is None
@@ -490,7 +488,7 @@ def test_an_unbounded_phase_reports_no_percentage(frozen_clock) -> None:
 
 def test_render_unbudgeted_session(frozen_clock) -> None:
     """``max_minutes == 0`` is the unlimited sentinel, not a zero budget."""
-    snapshot = Snapshot(phase="EXPLORE", max_minutes=0, result=ResultSummary(), _now_unix=frozen_clock)
+    snapshot = Snapshot(phase="KERNEL_AGENT", max_minutes=0, result=ResultSummary(), _now_unix=frozen_clock)
     assert "no time budget" in render_status(snapshot, style=PLAIN)
 
 
@@ -522,7 +520,7 @@ def test_json_is_valid_and_versioned(session_dir: Path, frozen_clock) -> None:
     payload = json.loads(render_json(snapshot))
 
     assert payload["schema_version"] == SCHEMA_VERSION
-    assert payload["status"]["phase"] == "EXPLORE"
+    assert payload["status"]["phase"] == "FRAMEWORK_AGENT"
     assert payload["session"]["model_name"] == "test-model"
     assert payload["resources"]["tasks"]["total"] == 4
 
