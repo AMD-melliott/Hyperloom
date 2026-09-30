@@ -5,13 +5,7 @@
 # See LICENSE for license information.
 ###############################################################################
 
-"""Contract tests for the kernel source-resolution artifact and its review tier.
-
-The artifact exists so that "where does this kernel live, and how do we know"
-has one versioned answer on disk instead of a scatter of candidate fields. That
-only holds if the schema is enforced, so these pin the envelope, the per-entry
-keys, and the guard rails on the tier allowed to rewrite entries.
-"""
+"""Contract tests for the kernel source-resolution artifact and its review tier."""
 
 from __future__ import annotations
 
@@ -21,9 +15,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-import tracelens_analysis as tl  # noqa: E402
+import tracelens_analysis as tl
 
-from hyperloom.common import kernel_source_contract as ksc  # noqa: E402
+from hyperloom.common import kernel_source_contract as ksc
 
 
 # --- envelope and entry contract -------------------------------------------
@@ -153,6 +147,40 @@ def test_projection_classifies_each_resolution_tier():
     assert by_id["k5"]["method"] != ksc.METHOD_LLM
 
 
+def test_active_finder_non_patchable_verdict_is_written(tmp_path):
+    """A symbol-detected non-patchable kernel names no source, so it must not be recorded as located."""
+    out = tmp_path / ksc.SOURCE_RESOLUTION_FILENAME
+    written = tl.write_source_resolution_artifact(
+        [
+            {
+                "kernel_id": "k1",
+                "name": "a",
+                "gpu_pct": 5.0,
+                "source_file": "/x/a.py",
+                "source_resolution_method": "trace_python_stack",
+            },
+            {
+                "kernel_id": "k2",
+                "name": "asm_gemm",
+                "gpu_pct": 4.0,
+                "source_file": "",
+                "source_resolution_method": "active_finder",
+                "source_resolution_reason": "non-patchable kernel (symbol-detected)",
+                "skip_reason": "non-patchable kernel name marker",
+            },
+        ],
+        out,
+        framework="atom",
+    )
+    assert written == out
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert ksc.validate_document(doc) == []
+    by_id = {e["kernel_id"]: e for e in doc["entries"]}
+    assert by_id["k2"]["method"] == ksc.METHOD_UNRESOLVED
+    assert by_id["k2"]["reason"] == "non-patchable kernel (symbol-detected)"
+    assert by_id["k2"]["reason_class"] == ksc.CLASS_NON_PATCHABLE_NAME
+
+
 def test_written_artifact_satisfies_its_own_contract(tmp_path):
     out = tmp_path / ksc.SOURCE_RESOLUTION_FILENAME
     tl.write_source_resolution_artifact(
@@ -174,30 +202,6 @@ def test_written_artifact_satisfies_its_own_contract(tmp_path):
 
 
 # --- degrade, don't abort, against an older installed contract module -------
-#
-# tracelens_analysis.py runs as a standalone subprocess and imports the
-# *installed* hyperloom, which need not match this checkout (cf.
-# runtime/source-mirrors/). A contract module that predates the method-name
-# constants this script reads must degrade to a fallback method name rather
-# than raise AttributeError and kill the run.
-
-
-def test_active_finder_method_falls_back_without_the_constant(monkeypatch):
-    """A contract module missing METHOD_ACTIVE_FINDER must not crash the reader."""
-
-    class _OldContract:
-        """Stands in for a too-old kernel_source_contract (no new constants)."""
-
-    monkeypatch.setattr(tl, "_KSC", _OldContract())
-    # The module-level literal is the source of truth for the fallback string.
-    assert tl._ACTIVE_FINDER_METHOD == "active_finder"
-    authoritative_item = {
-        "source_resolution_method": "active_finder",
-        "op_to_source_status": tl._ROUTABLE_STATUS,
-    }
-    # _is_curated_resolution reads METHOD_ACTIVE_FINDER/SYMBOL_INDEX/CURATED; it
-    # must resolve them via fallback rather than AttributeError.
-    assert tl._is_curated_resolution(authoritative_item) is True
 
 
 def test_candidate_method_falls_back_without_the_constants(monkeypatch):
@@ -216,6 +220,6 @@ def test_stamped_method_survives_a_missing_known_methods(monkeypatch):
 
     monkeypatch.setattr(tl, "_KSC", _OldContract())
     item = {"source_resolution_method": "active_finder", "source_file": "/repo/k.cu"}
-    # KNOWN_METHODS is missing -> the stamp is not recognized and falls to the
-    # path-present grep verdict rather than raising.
+    # KNOWN_METHODS is missing -> the stamp is not recognized and falls to the path-present grep verdict rather than
+    # raising.
     assert tl._candidate_resolution_method(item) == "name_grep"

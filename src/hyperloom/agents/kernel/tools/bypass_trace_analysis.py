@@ -6,23 +6,7 @@
 # See LICENSE for license information.
 ###############################################################################
 
-"""Independent (TraceLens-free) trace analysis backend for the bypass route.
-
-This tool is the runtime target of ``HYPERLOOM_TRACE_ANALYSIS_ROUTE=bypass``.
-It replaces the TraceLens agent / TraceLens deterministic scripts entirely:
-it never imports or shells out to TraceLens. It reads the torch-profiler
-Kineto trace produced by the ``profile`` step and emits the same downstream
-artifact contract the Coordinator / kernel-agent expect:
-
-    - ``<run_dir>/bypass/analysis.md``       (human-readable report)
-    - ``<run_dir>/kernel_candidates.json``   (hot kernels + skipped + groups)
-    - ``<run_dir>/bypass/summary.json``      (routed vs skipped audit)
-    - ``<workspace>/reports/<roofline>.json``(per-kernel roofline sidecar)
-    - ``<run_dir>/trace_input_manifest.json``(input record)
-
-and prints a single JSON result object to stdout in the shape
-``kernel_request_handlers._shape_tool_result`` consumes.
-"""
+"""Independent (TraceLens-free) trace analysis backend for the bypass route."""
 
 from __future__ import annotations
 
@@ -38,24 +22,19 @@ from typing import Any
 
 # Sibling modules live next to this tool (invoked by absolute path).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _bypass_report as _report  # noqa: E402
-import _bypass_trace_reader as _reader  # noqa: E402
-import _trace_shape_manifest as _tsm  # noqa: E402
+import _bypass_report as _report
+import _bypass_trace_reader as _reader
+import _trace_shape_manifest as _tsm
 
-# Shared provenance builder (WP-0). Optional import: this tool is also invoked
-# standalone by absolute path, where the ``hyperloom`` package may not be on the
-# path -- in that case we fall back to a minimal env-derived stub.
-try:
-    from hyperloom.common.provenance import build_provenance as _shared_build_provenance
-except Exception:  # noqa: BLE001 — standalone invocation without the package installed.
-    _shared_build_provenance = None
-from _idle_gate import (  # noqa: E402
+from hyperloom.common.provenance import build_provenance as _shared_build_provenance
+from hyperloom.inference_optimizer import framework_registry
+from _idle_gate import (
     build_graph_under_recorded_warning,
     build_high_idle_warning,
     resolve_idle_pct_threshold,
 )
-from _denoise_steps import count_profiler_steps, resolve_perstep_divisor  # noqa: E402
-from _io_utils import atomic_write_json, utc_now, write_text  # noqa: E402
+from _denoise_steps import count_profiler_steps, resolve_perstep_divisor
+from _io_utils import atomic_write_json, utc_now, write_text
 
 
 AGGREGATION_SCOPE_FULL = "full_trace"
@@ -72,22 +51,7 @@ def _maybe_enrich_rocprof(
     candidates_path: Path,
     run_dir: Path,
 ) -> dict[str, Any]:
-    """Dead rocprof-compute enrichment hook; kept only for the summary key.
-
-    Gated off by default via ``HYPERLOOM_ROCPROF_ROOFLINE_ENRICH``. No
-    ``rocprof_roofline`` module exists, so opting in cannot enrich anything —
-    the import raises and the except branch returns an error status.
-
-    Args:
-        kernel_roofline_path: Path to the written ``kernel_roofline.json``.
-        candidates_path: Path to the written ``kernel_candidates.json``.
-        run_dir: Per-run output directory used as the profiling workdir.
-
-    Returns:
-        ``{"status": "disabled"}`` when the env gate is off (the only reachable
-        non-error result), otherwise ``{"status": "error: ..."}``. Progress is
-        logged to stderr so stdout stays a single result-JSON line.
-    """
+    """Dead rocprof-compute enrichment hook; kept only for the summary key."""
     enrich_value = os.environ.get("HYPERLOOM_ROCPROF_ROOFLINE_ENRICH", "0").strip().lower()
     if enrich_value not in {"1", "true", "yes", "on"}:
         return {"status": "disabled"}
@@ -118,22 +82,7 @@ def _maybe_enrich_rocprof(
 
 
 def _emit_quality_warnings(analyze: dict[str, Any], warnings: list[dict[str, Any]]) -> None:
-    """Append analysis-quality health signals so weak analyses are never silent.
-
-    Emits (all non-fatal) when:
-      * too much GPU time is unclassified (``Others`` share high) -> taxonomy gap;
-      * op-attribution coverage is near-zero -> correlation chain broken;
-      * steady-state windowing was requested but fell back to the full trace;
-      * only CUDA-graph capture shards were found (no main profiler trace).
-
-    Thresholds are env-tunable (``HYPERLOOM_BYPASS_OTHERS_WARN_PCT`` default 40,
-    ``HYPERLOOM_BYPASS_CORR_WARN_PCT`` default 10). Only called when the trace
-    yielded GPU kernels (otherwise ``bypass_no_gpu_kernels`` already fired).
-
-    Args:
-        analyze: Result of :func:`_bypass_trace_reader.analyze_trace`.
-        warnings: The ``trace_health_warnings`` list to append to (mutated).
-    """
+    """Append analysis-quality health signals so weak analyses are never silent."""
     try:
         others_thr = float(os.environ.get("HYPERLOOM_BYPASS_OTHERS_WARN_PCT", "40") or 40)
     except ValueError:
@@ -207,8 +156,6 @@ _SHAPE_MANIFEST_ENV = "HYPERLOOM_TRACE_SHAPE_MANIFEST"
 #: rather than unsetting it, and a bare ``{"0","false","no","off"}`` check read
 #: every one of those as "enabled" -- the opposite of what was written.
 _SHAPE_MANIFEST_OFF_VALUES = frozenset({"", "0", "false", "no", "off", "none", "disable", "disabled"})
-#: Optional gfx-arch provenance override (WP-1 stub; superseded by WP-0/WP-7).
-_GFX_ENV = "HYPERLOOM_GFX_ARCH"
 #: sglang capture shard filename -> ``bs_<batch>`` variant. vLLM instead emits
 #: ``graph_capture_rank_*`` files whose batch/mode live in execution_details.json.
 #: Searched rather than matched from the start: an SGLang without the profiler
@@ -249,12 +196,7 @@ def _sha256_file(path: str | Path) -> str:
 
 
 def _load_execution_details(capdir: Path) -> dict[str, dict[str, Any]]:
-    """Map ``capture filename -> {batch_size, mode}`` from vLLM's
-    ``execution_details.json`` (a list of ``{file, batch_size, mode}``).
-
-    Returns an empty map when absent/unreadable (sglang shards or older
-    captures), so callers fall back to filename-derived labels.
-    """
+    """Map ``capture filename -> {batch_size, mode}`` from vLLM's ``execution_details.json`` (a list of ``{file, batch_size, mode}``)."""
     out: dict[str, dict[str, Any]] = {}
     try:
         data = json.loads((capdir / "execution_details.json").read_text(encoding="utf-8"))
@@ -267,15 +209,7 @@ def _load_execution_details(capdir: Path) -> dict[str, dict[str, Any]]:
 
 
 def _discover_capture_shards(trace_input: str, capture_folder: str) -> list[tuple[Path, str, str | None]]:
-    """Return ``(file, variant_label, mode)`` for each CUDA-graph capture shard.
-
-    Handles both capture layouts:
-      * sglang ``bs_<batch>_rank<n>`` shards -> variant from the filename;
-      * vLLM ``graph_capture_rank_*`` files -> variant (``bs_<batch>``) and mode
-        from the sibling ``execution_details.json`` batch mapping.
-
-    Looks in ``capture_folder`` when given, else under the trace-input tree.
-    """
+    """Return ``(file, variant_label, mode)`` for each CUDA-graph capture shard."""
     roots: list[Path] = []
     if capture_folder:
         roots.append(Path(capture_folder))
@@ -299,16 +233,13 @@ def _discover_capture_shards(trace_input: str, capture_folder: str) -> list[tupl
             pdir = cand.parent
             if pdir not in exec_cache:
                 exec_cache[pdir] = _load_execution_details(pdir)
-            # vLLM only: its shards are named ``graph_capture_*`` and keep
-            # batch/mode in execution_details.json. An SGLang name that merely
-            # *contains* the token writes no such file, so routing it here would
-            # yield bs=None and fall back to the per-rank stem.
+            # vLLM only: its shards are named ``graph_capture_*`` and keep batch/mode in execution_details.json.
             if name.lower().startswith("graph_capture"):
                 meta = exec_cache[pdir].get(name, {})
                 bs = meta.get("batch_size")
                 mode = meta.get("mode")
-                # vLLM captures each batch in >1 graph mode (PIECEWISE + FULL);
-                # mode is part of the variant identity or they collide.
+                # vLLM captures each batch in >1 graph mode (PIECEWISE + FULL); mode is part of the variant identity
+                # or they collide.
                 if bs not in (None, ""):
                     label = f"bs_{bs}_{str(mode).lower()}" if mode else f"bs_{bs}"
                 else:
@@ -317,11 +248,8 @@ def _discover_capture_shards(trace_input: str, capture_folder: str) -> list[tupl
                 m = _VARIANT_RE.search(name)
                 label = m.group(1).lower() if m else cand.stem
                 mode = None
-            # TP>1 emits one capture shard per rank with the SAME variant label
-            # (bs_<batch>[_mode]); the ranks carry identical shapes, so keep only
-            # the first (representative rank). Otherwise duplicate labels
-            # overwrite each other's hash/meta downstream and inflate
-            # variant_count (risking the multi-variant unresolved path).
+            # TP>1 emits one capture shard per rank with the SAME variant label (bs_<batch>[_mode]); the ranks carry
+            # identical shapes, so keep only the first (representative rank).
             if label in seen_labels:
                 continue
             seen_labels.add(label)
@@ -330,54 +258,15 @@ def _discover_capture_shards(trace_input: str, capture_folder: str) -> list[tupl
 
 
 def _shard_order_key(shard: tuple[Path, str, str | None]) -> tuple[int, str, str]:
-    """Total order over capture shards: batch size, then label, then filename.
-
-    Discovery walks directories, so the natural order is filesystem order --
-    fine while every shard was indexed, but the cap turned it into a
-    machine-dependent choice of *which* variants the manifest describes.
-    """
+    """Total order over capture shards: batch size, then label, then filename."""
     _path, label, _mode = shard
     match = re.search(r"bs_(\d+)", label, re.IGNORECASE)
     return (int(match.group(1)) if match else 0, label, _path.name)
 
 
 def _build_manifest_provenance(args: argparse.Namespace) -> dict[str, Any]:
-    """Provenance block for the TraceShapeManifest.
-
-    Delegates to the shared ``hyperloom.common.provenance.build_provenance``
-    (WP-0) so the trace manifest and the session manifest never drift. Falls
-    back to a minimal env-derived stub only when the shared module is not
-    importable (standalone tool invocation without the package installed); the
-    ``_provenance_source`` tag distinguishes the two.
-    """
-    if _shared_build_provenance is not None:
-        try:
-            return _shared_build_provenance(args, env=os.environ, probe=True)
-        except Exception:  # noqa: BLE001 — provenance must never break the manifest.
-            pass
-
-    def _env(*names: str) -> Any:
-        for n in names:
-            v = os.environ.get(n)
-            if v:
-                return v
-        return None
-
-    return {
-        "_provenance_source": "wp1_stub",
-        "model_name": args.model_name or None,
-        "model_path": getattr(args, "model_path", "") or None,
-        "framework": args.framework or None,
-        "target_platform": args.target_platform or None,
-        "gfx_arch": _env(_GFX_ENV),
-        "dtype": args.precision or _env("PRECISION"),
-        "tp": _env("TP"),
-        "ep": _env("EP"),
-        "concurrency": _env("CONC", "CONCURRENCY"),
-        "isl": _env("ISL"),
-        "osl": _env("OSL"),
-        "graph_mode": _env("HYPERLOOM_GRAPH_MODE"),
-    }
+    """Provenance block for the TraceShapeManifest."""
+    return _shared_build_provenance(args, env=os.environ, probe=True)
 
 
 def _maybe_build_shape_manifest(
@@ -387,16 +276,7 @@ def _maybe_build_shape_manifest(
     *,
     generated_at: str,
 ) -> dict[str, Any]:
-    """Optionally build + write the variant-discriminating TraceShapeManifest.
-
-    Built by default; ``HYPERLOOM_TRACE_SHAPE_MANIFEST`` set to any of
-    :data:`_SHAPE_MANIFEST_OFF_VALUES` (including empty) returns
-    ``{"status": "disabled"}`` and writes nothing. When enabled, capture shards
-    are indexed per
-    ``bs_<batch>`` variant; with no capture shards it falls back to an eager
-    manifest built from the main analysis. Never raises -- any failure degrades
-    to ``{"status": "error: ..."}`` and is logged to stderr.
-    """
+    """Optionally build + write the variant-discriminating TraceShapeManifest."""
     flag = os.environ.get(_SHAPE_MANIFEST_ENV, "1").strip().lower()
     if flag in _SHAPE_MANIFEST_OFF_VALUES:
         return {"status": "disabled"}
@@ -416,18 +296,7 @@ def _maybe_build_shape_manifest(
                 f"(set {_MAX_CAPTURES_ENV}=0 to index all)",
                 file=sys.stderr,
             )
-            # Evenly spaced over the batch-sorted list, not the first N. Discovery
-            # order is directory order, so "first N" both varied between machines
-            # and -- once sorted -- would have kept only the small-batch end,
-            # indexing 64 decode variants and no prefill one. Each dropped shard
-            # costs a full analyze_trace + sha256, which is why the cap exists.
-            #
-            # Spaced inclusive of BOTH ends. A plain ``int(i * len / max_caps)``
-            # is even but half-open: its last index is short of the tail, so the
-            # widest batch -- the one prefill variant the spread exists to keep --
-            # was the single shard guaranteed to be dropped. With one slot there
-            # is no spread to speak of; take the widest, since a decode variant
-            # is the one the eager fallback can stand in for.
+            # Evenly spaced over the batch-sorted list, not the first N.
             last = len(shards) - 1
             if max_caps == 1:
                 shards = [shards[last]]
@@ -438,7 +307,7 @@ def _maybe_build_shape_manifest(
         variant_meta: dict[str, dict[str, Any]] = {}
         for path, label, mode in shards:
             shard_an = _reader.analyze_trace(path, top_k=0, steady_state=False, emit_launches=True)
-            if shard_an.get("status") != "ok":
+            if shard_an.get("status") != "ok" or shard_an.get("truncated"):
                 continue
             capture_variants.append((label, shard_an))
             capture_hashes[label] = _sha256_file(path)
@@ -492,6 +361,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--framework", default="")
     p.add_argument("--target-platform", default="")
     p.add_argument("--analysis-mode", default="")
+    p.add_argument("--require-single-rank", action="store_true")
+    p.add_argument("--tensor-parallel-size", type=int, default=0)
     p.add_argument("--split-conc", default="")
     p.add_argument("--split-osl", default="")
     p.add_argument("--split-r", default="")
@@ -504,15 +375,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "(mixed / decode_only / prefilldecode); off values: '', 0, false, off, none.",
     )
     p.add_argument("--roofline-output-name", default="kernel_roofline.json")
-    # Denoise-step count for scriptable/diffusion workloads; 0 = infer. The env
-    # fallback matches the TraceLens CLI, so the divisor cannot differ by route.
+    # Denoise-step count for scriptable/diffusion workloads; 0 = infer.
     p.add_argument(
         "--num-denoise-steps",
         type=int,
         default=int(os.environ.get("HYPERLOOM_NUM_DENOISE_STEPS", "0") or 0),
     )
-    # Diffusion analytic-ceiling inputs shared with the TraceLens CLI surface;
-    # parsed but unused on this route.
+    # Diffusion analytic-ceiling inputs shared with the TraceLens CLI surface; parsed but unused on this route.
     p.add_argument("--model-path", default=os.environ.get("MODEL_PATH", ""))
     p.add_argument("--precision", default="")
     p.add_argument("--height", type=int, default=0)
@@ -527,75 +396,13 @@ _STEADY_OFF_VALUES = frozenset({"", "0", "false", "off", "no", "none"})
 
 
 def _should_enable_steady(*, steady_state_mode: str, framework: str, env_steady: bool) -> bool:
-    """Whether to run steady-state windowing for this trace analysis.
-
-    On for: the env opt-in; xDiT (homogeneous denoise steps -> one representative
-    step); OR any non-off ``--steady-state-mode``. The last clause covers the
-    TraceLens splitter chunk types the coordinator forwards (``mixed`` /
-    ``decode_only`` / ``prefilldecode``) plus the legacy opt-in aliases, so a
-    text-gen bypass run windows the requested steady chunk instead of silently
-    aggregating the full trace (parity with the TraceLens route). bypass's
-    repeat-based windowing then anchors a representative step, or degrades to
-    full-trace (with the existing warning) when no window is found.
-    """
+    """Whether to run steady-state windowing for this trace analysis."""
     mode = (steady_state_mode or "").strip().lower()
     return bool(env_steady) or (framework or "").lower() == "xdit" or mode not in _STEADY_OFF_VALUES
 
 
-#: Mirrors of the ``framework_registry``, used only when that package is not
-#: importable (standalone invocation). Keep in sync when a framework is added;
-#: tests assert both against the registry so a divergence cannot land.
-_STANDALONE_UNITS = {"xdit": "img/s", "custom": "unit/s"}
-_STANDALONE_SCRIPTABLE = frozenset({"xdit", "custom"})
-
-
-def _is_scriptable_framework(framework: str | None) -> bool:
-    """Return whether ``framework`` is a server-less scriptable workload.
-
-    Args:
-        framework: Framework name (matched case-insensitively).
-
-    Returns:
-        bool: ``True`` for ``kind=scriptable`` frameworks.
-    """
-    try:
-        from hyperloom.inference_optimizer.framework_registry import is_scriptable
-
-        return is_scriptable(framework)
-    except ImportError:  # standalone invocation without the package installed.
-        return str(framework or "").strip().lower() in _STANDALONE_SCRIPTABLE
-
-
-def _throughput_unit(framework: str | None) -> str:
-    """Return the throughput unit ``framework`` reports, per the registry.
-
-    The registry is the single source of truth here, so an operator's ``custom``
-    workload reports its own neutral ``unit/s`` instead of being mislabelled
-    ``tok/s``. Falls back to ``_STANDALONE_UNITS`` for standalone invocation,
-    where the ``hyperloom`` package may not be importable (see the provenance
-    import above).
-
-    Args:
-        framework: Framework name (matched case-insensitively).
-
-    Returns:
-        str: The unit string, e.g. ``"tok/s"``, ``"img/s"`` or ``"unit/s"``.
-    """
-    try:
-        from hyperloom.inference_optimizer.framework_registry import throughput_unit
-
-        return throughput_unit(framework)
-    except ImportError:  # standalone invocation without the package installed.
-        return _STANDALONE_UNITS.get(str(framework or "").strip().lower(), "tok/s")
-
-
 def main(argv: list[str] | None = None) -> int:
-    """Entry point: emit the minimal bypass artifact set and a result JSON.
-
-    Returns:
-        Process exit code (``0`` on success). The structured result is printed
-        to stdout as a single JSON object regardless of exit code.
-    """
+    """Entry point: emit the minimal bypass artifact set and a result JSON."""
     args = _build_arg_parser().parse_args(argv)
 
     workspace = Path(args.workspace_path)
@@ -609,9 +416,38 @@ def main(argv: list[str] | None = None) -> int:
     trace_health_warnings: list[dict[str, Any]] = []
     top_k = args.top_k if args.top_k and args.top_k > 0 else 15
 
+    # Mirrors the ``run_meta`` block tracelens_analysis.py returns so the caller's SBD V6 roofline event carries one
+    # shape for both tools.
+    run_meta: dict[str, Any] = {
+        "preflight": {},
+        "split": {},
+        "selection": {},
+        "steps": [],
+        "route_ext": {},
+    }
+
+    def _note_step(
+        step_id: str,
+        *,
+        category: str,
+        status: str,
+        skip_reason: str | None = None,
+        **detail: Any,
+    ) -> None:
+        """Append one step to the run's ladder."""
+        run_meta["steps"].append(
+            {
+                "step_id": step_id,
+                "order": len(run_meta["steps"]) + 1,
+                "category": category,
+                "status": status,
+                "skip_reason": skip_reason,
+                "detail": detail,
+            }
+        )
+
     framework_l = (args.framework or "").lower()
-    # Steady-state windowing: opt-in via --steady-state-mode / env, always on
-    # for xDiT. Falls back to full-trace shares when no repeating window found.
+    # Steady-state windowing: opt-in via --steady-state-mode / env, always on for xDiT.
     env_steady = os.environ.get("HYPERLOOM_BYPASS_STEADY_STATE", "").strip().lower() in {"1", "true", "yes", "on"}
     enable_steady = _should_enable_steady(
         steady_state_mode=args.steady_state_mode or "",
@@ -639,11 +475,39 @@ def main(argv: list[str] | None = None) -> int:
                 steady_state=enable_steady,
                 framework=args.framework,
                 emit_launches=True,
+                require_single_rank=args.require_single_rank,
+                tensor_parallel_size=args.tensor_parallel_size or None,
             )
         except Exception as exc:  # noqa: BLE001 — never abort the pipeline
             analyze = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
-    # ``analysis_degraded`` distinguishes an analysis failure (bad/unparsable
-    # trace) from a genuine empty result.
+    run_meta["preflight"].update(
+        {
+            "trace_input": str(args.trace_input),
+            "steady_state_requested": bool(enable_steady),
+            "steady_state_mode": str(args.steady_state_mode or ""),
+        }
+    )
+    _note_step(
+        "discover_inputs",
+        category="preflight",
+        status="ok",
+        trace_input=str(args.trace_input),
+    )
+    for _skipped_step, _skip_reason in (
+        ("install_tracelens", "the TraceLens-free reader needs no TraceLens checkout"),
+        ("split_trace", "the reader windows the trace in memory and writes no split chunks"),
+        ("select_chunk", "no split chunks exist to select from"),
+    ):
+        _note_step(_skipped_step, category="split", status="skipped", skip_reason=_skip_reason)
+    _note_step(
+        "run_analysis",
+        category="analyze",
+        status="ok" if analyze.get("status") == "ok" else "failed",
+        reader="bypass_trace_reader",
+        steady_state_requested=bool(enable_steady),
+        error=str(analyze.get("error") or ""),
+    )
+    # ``analysis_degraded`` distinguishes an analysis failure (bad/unparsable trace) from a genuine empty result.
     analysis_degraded = False
     if analyze.get("status") != "ok":
         analysis_degraded = True
@@ -652,6 +516,17 @@ def main(argv: list[str] | None = None) -> int:
                 "code": "bypass_trace_parse_failed",
                 "severity": "warning",
                 "message": f"bypass reader could not analyze trace: {analyze.get('error', 'unknown')}",
+            }
+        )
+    elif analyze.get("truncated"):
+        trace_health_warnings.append(
+            {
+                "code": "bypass_trace_aggregation_truncated",
+                "severity": "warning",
+                "message": (
+                    "trace aggregation reached its safety cap; kernel rankings use only "
+                    f"the retained prefix ({analyze.get('truncation_reason', 'unknown')})."
+                ),
             }
         )
         analyze = {
@@ -686,8 +561,8 @@ def main(argv: list[str] | None = None) -> int:
     scope = analyze.get("aggregation_scope", AGGREGATION_SCOPE_FULL)
     steady_window = analyze.get("steady_window")
 
-    # ``estimated`` marks shares not anchored to a real per-step window (steady
-    # windowing requested but fell back to the full trace).
+    # ``estimated`` marks shares not anchored to a real per-step window (steady windowing requested but fell back to
+    # the full trace).
     estimated = enable_steady and scope != AGGREGATION_SCOPE_STEADY
     if framework_l == "xdit" and estimated:
         trace_health_warnings.append(
@@ -715,8 +590,7 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
 
-    # Multi-rank provenance: xDiT TP>1 produces one trace per rank; the reader
-    # analyzes one representative rank.
+    # Multi-rank provenance: xDiT TP>1 produces one trace per rank; the reader analyzes one representative rank.
     analyzed_rank = analyze.get("analyzed_rank")
     rank_count = analyze.get("rank_count", 1)
     if isinstance(rank_count, int) and rank_count > 1:
@@ -760,13 +634,11 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
 
-    # Steps present in the analyzed data. ``annotation_window_count`` is
-    # deliberately not a fallback: it counts user_annotation ranges, not steps.
+    # Steps present in the analyzed data.
     requested_denoise_steps = int(getattr(args, "num_denoise_steps", 0) or 0)
     inferred_denoise_steps = int((steady_window or {}).get("step_count", 0) or 0)
     if inferred_denoise_steps <= 0:
-        # Count in the file the reader resolved; a directory input may glob a
-        # different one.
+        # Count in the file the reader resolved; a directory input may glob a different one.
         inferred_denoise_steps = count_profiler_steps(str(analyze.get("trace_file") or args.trace_input))
     if requested_denoise_steps > 0 and inferred_denoise_steps > 0 and requested_denoise_steps != inferred_denoise_steps:
         trace_health_warnings.append(
@@ -803,13 +675,12 @@ def main(argv: list[str] | None = None) -> int:
     kernel_metrics_csv_path = bypass_dir / "kernel_metrics.csv"
     kernel_summary_csv_path = bypass_dir / "kernel_summary.csv"
 
-    # High-idle gate: when GPU idle exceeds the threshold, per-kernel rewriting
-    # cannot move end-to-end latency, so suppress every candidate list and
-    # surface a high_gpu_idle_pct warning for the Coordinator.
+    # High-idle gate: when GPU idle exceeds the threshold, per-kernel rewriting cannot move end-to-end latency, so
+    # suppress every candidate list and surface a high_gpu_idle_pct warning for the Coordinator.
     idle_pct_value = (analyze.get("timeline") or {}).get("idle_pct")
     idle_pct_threshold = resolve_idle_pct_threshold()
-    # Graph under-recording makes idle% unreliable: skip the idle gate (keep
-    # candidates ranked by recorded-kernel GPU share) and surface a health warning.
+    # Graph under-recording makes idle% unreliable: skip the idle gate (keep candidates ranked by recorded-kernel GPU
+    # share) and surface a health warning.
     graph_coverage = analyze.get("graph_coverage") or {}
     graph_under_recorded = bool(graph_coverage.get("graph_under_recorded"))
     if graph_under_recorded:
@@ -834,7 +705,7 @@ def main(argv: list[str] | None = None) -> int:
     for cand in candidates.get("hot_kernels", []):
         cand["trace_report_path"] = str(analysis_md_path)
 
-    throughput_unit = _throughput_unit(args.framework)
+    throughput_unit = framework_registry.throughput_unit(args.framework)
     write_text(
         analysis_md_path,
         _report.render_analysis_md(
@@ -895,8 +766,7 @@ def main(argv: list[str] | None = None) -> int:
         kernel_roofline_path, kernel_roofline, ensure_ascii=False, sort_keys=False, trailing_newline=False
     )
 
-    # Optional rocprof-compute enrichment (opt-in; enriches the sidecar in
-    # place). Skipped in --dry-run.
+    # Optional rocprof-compute enrichment (opt-in; enriches the sidecar in place).
     rocprof_enrich: dict[str, Any] = (
         {"status": "disabled"}
         if args.dry_run
@@ -908,16 +778,12 @@ def main(argv: list[str] | None = None) -> int:
     # Kernel-fusion opportunities: launch adjacency -> fusable clusters.
     fusion = _report.build_fusion(analyze)
 
-    # Diffusion / scriptable workload-level roofline: aggregate the per-kernel
-    # analytical roofline into an end-to-end workload roofline + per-denoise-step
-    # split. Best-effort sidecar over all device kernels, independent of the
-    # per-kernel high-idle gate, so still emitted in the high-idle regime.
-    # Gated on scriptable, not on a framework name: this sidecar is built purely
-    # from the trace, so it needs no denoiser config the operator may not supply.
+    # Diffusion / scriptable workload-level roofline: aggregate the per-kernel analytical roofline into an end-to-end
+    # workload roofline + per-denoise-step split.
     diffusion_roofline_path: str | None = None
-    if _is_scriptable_framework(args.framework):
+    if framework_registry.is_scriptable(args.framework):
         try:
-            from diffusion_roofline import build_report_from_bypass  # noqa: E402
+            from diffusion_roofline import build_report_from_bypass
 
             _diff_steps = resolve_perstep_divisor(
                 requested_steps=requested_denoise_steps,
@@ -940,8 +806,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:  # noqa: BLE001 - best-effort sidecar, never blocks the run
             diffusion_roofline_path = None
 
-    # Variant-discriminating TraceShapeManifest (P0-A / WP-1). On by default;
-    # HYPERLOOM_TRACE_SHAPE_MANIFEST=0 disables it and writes nothing.
+    # Variant-discriminating TraceShapeManifest (P0-A / WP-1).
     shape_manifest = _maybe_build_shape_manifest(args, analyze, bypass_dir, generated_at=utc_now(timespec="seconds"))
 
     hot_kernels = candidates.get("hot_kernels", [])
@@ -988,6 +853,47 @@ def main(argv: list[str] | None = None) -> int:
             "trace_input_manifest": str(manifest_path),
         },
     }
+    run_meta["selection"].update(
+        {
+            "requested_mode": str(args.steady_state_mode or ""),
+            "steady_window": steady_window,
+            "aggregation_scope": scope,
+            "fell_back_to_full_trace": bool(estimated),
+        }
+    )
+    # Analysis output that only this reader produces.
+    run_meta["route_ext"] = {
+        "target_platform": str(args.target_platform or ""),
+        "analyzed_rank": analyzed_rank,
+        "rank_count": rank_count,
+        "num_denoise_steps": requested_denoise_steps or inferred_denoise_steps,
+        "estimated": bool(estimated),
+        "analysis_degraded": bool(analysis_degraded),
+        "graph_coverage": analyze.get("graph_coverage") or {},
+        "timeline": analyze.get("timeline") or {},
+        "attribution": analyze.get("attribution") or {},
+        "fusion": {
+            "launch_count": fusion.get("launch_count", 0),
+            "fusable_cluster_count": fusion.get("fusable_cluster_count", 0),
+            "fusable_time_us": fusion.get("fusable_time_us", 0.0),
+        },
+        # Counts rather than the lists: the lists are already in the candidates artifact, and it is the partition that
+        # says whether dispatch has anything to work with.
+        "routable_kernel_count": len(candidates.get("routable_kernels", []) or []),
+        "skipped_kernel_count": len(candidates.get("skipped_kernels", []) or []),
+        "task_group_count": len(candidates.get("task_groups", []) or []),
+        "trace_shape_manifest_status": str(shape_manifest.get("status") or ""),
+        "diffusion_roofline_path": str(diffusion_roofline_path or ""),
+    }
+    _note_step(
+        "extract_hot_kernels",
+        category="emit",
+        status="ok",
+        hot_kernel_count=len(hot_kernels),
+        routable_kernel_count=run_meta["route_ext"]["routable_kernel_count"],
+    )
+    _note_step("write_reports", category="emit", status="ok", report_path=str(analysis_md_path))
+    result["run_meta"] = run_meta
     # Surfaced only when the opt-in manifest was produced (P0-A / WP-1).
     result["trace_shape_manifest"] = shape_manifest
     if shape_manifest.get("status") == "ok" and shape_manifest.get("path"):

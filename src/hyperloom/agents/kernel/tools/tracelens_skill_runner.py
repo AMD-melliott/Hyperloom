@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import ast
 import importlib.util
+import logging
 import os
 import re
 import shlex
@@ -30,13 +31,15 @@ from hyperloom.common.codex_session import (
     run_codex_turn,
 )
 from hyperloom.common.llm_config import claude_sdk_env_options
-from hyperloom.orchestrator.roles.agent_role import DEFAULT_CODEX_MODEL
+from hyperloom.common.llm_config import DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL
 
 # Sibling import works whether run as a script or loaded via importlib.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _capture_shapes import is_capture_dir_name  # noqa: E402
-from _io_utils import safe_float  # noqa: E402
-from _task_group_contract import (  # noqa: E402
+from _capture_shapes import is_capture_dir_name
+from _io_utils import safe_float
+from _literal_utils import LITERAL_EVAL_ERRORS as _LITERAL_EVAL_ERRORS
+from _literal_utils import safe_literal_eval as _safe_literal_eval
+from _task_group_contract import (
     build_operator_identity,
     build_task_group_shape_cases,
     legacy_operator_identity_keys,
@@ -45,6 +48,7 @@ from _task_group_contract import (  # noqa: E402
 
 sys.path.pop(0)
 
+_log = logging.getLogger(__name__)
 
 DEFAULT_ALLOWED_TOOLS = ["Read", "Write", "Edit", "Bash", "Task"]
 
@@ -152,6 +156,59 @@ def _tool_call_transition(message: Any) -> str | None:
         elif "ToolResult" in block_name:
             transition = "end"
     return transition
+
+
+# For SDK builds that do not export TERMINAL_TASK_STATUSES.
+_TERMINAL_TASK_STATUSES = frozenset({"completed", "failed", "stopped", "killed", "cancelled"})
+
+
+def _terminal_task_statuses() -> frozenset[str]:
+    try:
+        from claude_agent_sdk import TERMINAL_TASK_STATUSES  # type: ignore[import-not-found]
+    except ImportError:
+        return _TERMINAL_TASK_STATUSES
+    return frozenset(str(s) for s in TERMINAL_TASK_STATUSES)
+
+
+class _InFlight:
+    """Whether the run is waiting on work that emits no SDK message until it ends.
+
+    That is a foreground tool call, or a background task (an async sub-agent)
+    whose launching tool call already returned. A background task is tracked by
+    id from ``TaskStartedMessage`` until a ``TaskNotificationMessage`` or a
+    ``TaskUpdatedMessage`` with a terminal status, which is how the SDK says
+    active task ids must be cleared.
+    """
+
+    def __init__(self) -> None:
+        self.tool = False
+        self.tasks: set[str] = set()
+
+    @property
+    def busy(self) -> bool:
+        return self.tool or bool(self.tasks)
+
+    def observe(self, message: Any) -> None:
+        transition = _tool_call_transition(message)
+        if transition == "start":
+            self.tool = True
+        elif transition == "end":
+            self.tool = False
+        name = type(message).__name__
+        task_id = str(getattr(message, "task_id", "") or "")
+        if name == "ResultMessage":
+            self.tasks.clear()
+        elif not task_id:
+            return
+        elif name == "TaskStartedMessage":
+            self.tasks.add(task_id)
+        elif name == "TaskNotificationMessage":
+            self.tasks.discard(task_id)
+        elif name == "TaskUpdatedMessage":
+            patch = getattr(message, "patch", None)
+            status = patch.get("status") if isinstance(patch, dict) else getattr(patch, "status", None)
+            if str(status or getattr(message, "status", "") or "") in _terminal_task_statuses():
+                self.tasks.discard(task_id)
 
 
 # Strips a ``Kernel N:`` label prefix from a kernel-name cell piece.
@@ -287,9 +344,8 @@ def discover_capture_folder(trace_input: Path, trace_files: list[Path]) -> Path 
     a subdirectory whose name matches the shared capture-directory shape, so a
     layout that ranking already demotes is also a layout discovery can find.
     Matching by shape rather than by two hard-coded names is what lets an
-    unpatched SGLang's ``graph_capture_profile/`` through: it was previously
-    missed here, so the capture folder went unpassed even on runs that had
-    correctly picked the workload trace.
+    unpatched SGLang's ``graph_capture_profile/`` through, so the capture folder
+    is passed on whenever the workload trace was picked.
 
     Args:
         trace_input (Path): The trace input path (file or directory).
@@ -299,6 +355,7 @@ def discover_capture_folder(trace_input: Path, trace_files: list[Path]) -> Path 
         Path | None: The capture folder if one exists nearby, else ``None``.
     """
 
+    capture_dir_priority = ("capture_traces", "graph_capture_profile", "graph_capture")
     search_roots: list[Path] = []
     if trace_input.is_dir():
         search_roots.append(trace_input)
@@ -310,11 +367,15 @@ def discover_capture_folder(trace_input: Path, trace_files: list[Path]) -> Path 
             continue
         seen.add(root)
         try:
-            children = sorted(root.iterdir())
+            children = [child for child in root.iterdir() if child.is_dir()]
         except OSError:
             continue
-        for child in children:
-            if child.is_dir() and is_capture_dir_name(child.name):
+        children_by_name = {child.name.lower(): child for child in children}
+        for name in capture_dir_priority:
+            if child := children_by_name.get(name):
+                return child
+        for child in sorted(children):
+            if is_capture_dir_name(child.name):
                 return child
     return None
 
@@ -393,7 +454,7 @@ Execution context:
 
 Important requirements:
 1. Use the provided command prefix cache for all shell commands.
-2. Run the analysis-orchestrator workflow through Step 11.
+2. Run the analysis-orchestrator workflow through Step 12.
 3. If analysis_mode is inference and execution mode is graph_capture, pass the
    capture folder to the inference perf-report CLI exactly as the skill says.
 4. Write all TraceLens outputs under the output directory above.
@@ -431,19 +492,143 @@ def _should_use_codex_runner() -> bool:
     """Return true when the Codex Agent SDK runner should run this skill.
 
     An OpenAI-only deployment has no Claude credentials to drive the Claude
-    Agent SDK, so the Codex runner is the only one that can execute. The shape
-    test itself belongs to :mod:`hyperloom.common.llm_config`, so this cannot
+    Agent SDK, so the Codex runner is the only one that can execute. The choice
+    itself belongs to :mod:`hyperloom.common.llm_config`, so this cannot
     disagree with backend selection or the forge kernel_backend.
     """
     from hyperloom.common import llm_config  # local import: keep module import-light
 
-    return llm_config.is_openai_only()
+    return llm_config.preferred_agent_backend() == llm_config.AGENT_BACKEND_CODEX
 
 
 def _iter_message_text(message: Any) -> Iterable[str]:
-    from hyperloom.common.claude_oneshot import message_text  # noqa: PLC0415
+    from hyperloom.common.claude_oneshot import message_text
 
     yield from (t for t in message_text(message) if t)
+
+
+class _TrajectoryCall:
+    """The run's ``llm.call`` span on the Hyperloom trajectory ledger, with one ``llm.request`` row per model request.
+
+    The ledger drops rows when no session is in scope, so outside a Hyperloom-launched run this records nothing.
+    """
+
+    def __init__(self, model: str) -> None:
+        self._model = model
+        self._usage: dict[str, Any] = {}
+        self._tracker: Any = None
+        self._span_cm: Any = None
+        self._span: Any = None
+
+    def __enter__(self) -> "_TrajectoryCall":
+        from hyperloom.orchestrator.roles.claude_requests import ClaudeRequestTracker
+        from hyperloom.inference_optimizer.trace.llm_trace import new_call_id
+        from hyperloom.inference_optimizer.trace.trajectory_trace import EVENT_LLM_CALL, trajectory_span
+
+        self._tracker = ClaudeRequestTracker()
+        self._span_cm = trajectory_span(
+            EVENT_LLM_CALL,
+            call_id=new_call_id(),
+            component="tracelens",
+            agent="tracelens",
+            attributes={"name": "tracelens", "model": self._model},
+        )
+        self._span = self._span_cm.__enter__()
+        return self
+
+    def observe(self, message: Any) -> None:
+        """Feed one SDK stream message to the per-request tracker; a tracing fault never reaches the run."""
+        try:
+            self._tracker.observe(message)
+        except Exception:  # noqa: BLE001
+            _log.debug("tracelens trajectory: request tracker rejected a message", exc_info=True)
+        usage = getattr(message, "usage", None)
+        if type(message).__name__ == "ResultMessage" and isinstance(usage, dict):
+            self._usage = dict(usage)
+
+    def finish(self, sdk_error: str) -> None:
+        """Close the call with the run's ``ResultMessage`` usage, ``failed`` when the SDK reported an error."""
+        from hyperloom.inference_optimizer.trace.trajectory_trace import (
+            STATUS_COMPLETED,
+            STATUS_FAILED,
+            llm_call_summary,
+        )
+
+        attributes = llm_call_summary({**self._usage, "model": self._model})
+        if sdk_error:
+            self._span.finish(STATUS_FAILED, error_message=sdk_error[:500], **attributes)
+        else:
+            self._span.finish(STATUS_COMPLETED, **attributes)
+
+    def __exit__(self, *exc_info: Any) -> Any:
+        # Requests are written while the call span is still the ambient parent.
+        try:
+            self._tracker.record_trajectory(attempt=1, fallback_model=self._model)
+        except Exception:  # noqa: BLE001
+            _log.debug("tracelens trajectory: request rows were not recorded", exc_info=True)
+        return self._span_cm.__exit__(*exc_info)
+
+
+async def _drive_sdk_stream(
+    stream: Any,
+    *,
+    chunks: list[str],
+    idle_timeout: float,
+    tool_idle_timeout: float,
+    observe: Callable[[Any], None],
+    log: Callable[[str], None] | None,
+) -> str:
+    """Consume the SDK stream, appending its text to ``chunks``; return the SDK error, ``""`` when there was none.
+
+    Each next message is bounded by an idle timeout (inactivity, not a total budget), widened while a tool call or a
+    background task is in flight because the SDK emits nothing between its launch and its result.
+    """
+    sdk_error = ""
+    in_flight = _InFlight()
+    stream_iter = stream.__aiter__() if hasattr(stream, "__aiter__") else stream
+    try:
+        while True:
+            wait_for = tool_idle_timeout if in_flight.busy else idle_timeout
+            try:
+                if wait_for > 0:
+                    message = await asyncio.wait_for(stream_iter.__anext__(), timeout=wait_for)
+                else:
+                    message = await stream_iter.__anext__()
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                # Stream went quiet past its bound: abort and tear the generator
+                # down so its transport/subprocess does not leak. Name the phase —
+                # silence during a tool call means the tool overran its bound, not
+                # that the gateway died.
+                if in_flight.tool:
+                    phase = "while a tool call was in flight"
+                elif in_flight.tasks:
+                    phase = f"while {len(in_flight.tasks)} background task(s) were running"
+                else:
+                    phase = "with no tool call in flight"
+                sdk_error = f"stream idle timeout: no SDK message for {wait_for:.0f}s {phase}"
+                if log:
+                    log(f"[claude-sdk] WARNING: {sdk_error}")
+                aclose = getattr(stream_iter, "aclose", None)
+                if aclose is not None:
+                    try:
+                        await asyncio.wait_for(aclose(), timeout=10.0)
+                    except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+                        pass
+                break
+            observe(message)
+            in_flight.observe(message)
+            for text in _iter_message_text(message):
+                chunks.append(text)
+                if log:
+                    log(f"[claude-sdk] {text[:1000]}")
+    except Exception as exc:  # noqa: BLE001
+        # SDK may error after writing artifacts; treat artifact presence as truth.
+        sdk_error = f"{type(exc).__name__}: {exc}"
+        if log:
+            log(f"[claude-sdk] WARNING: {sdk_error}")
+    return sdk_error
 
 
 async def _run_tracelens_skill_codex(
@@ -452,6 +637,7 @@ async def _run_tracelens_skill_codex(
     output_dir: Path,
     prefix_path: Path,
     tracelens_root: Path,
+    capture_folder: Path | None,
     model: str,
     timeout_sec: float,
     codex_turn_runner: Callable[..., Awaitable[CodexSessionResult]],
@@ -461,11 +647,14 @@ async def _run_tracelens_skill_codex(
 
     The session works out of ``tracelens_root``, matching the Claude path, so
     the skill's command-prefix cache and the TraceLens CLIs' own relative paths
-    resolve identically on both runners. The write scope is that workspace plus
-    ``output_dir``; the rest of the host is readable but immutable. The
-    TraceLens checkout has to stay writable because its CLIs write caches and
-    intermediates into their own tree, so narrowing the workspace to
-    ``output_dir`` alone would break the analysis rather than harden it.
+    resolve identically on both runners. The write scope is that workspace,
+    ``output_dir`` and ``capture_folder``; the rest of the host is readable but
+    immutable. The TraceLens checkout has to stay writable because its CLIs
+    write caches and intermediates into their own tree, so narrowing the
+    workspace to ``output_dir`` alone would break the analysis rather than
+    harden it. The capture folder is writable for the same reason: the
+    inference perf report classifies it before merging it, and that
+    classification writes ``execution_details.json`` into the folder itself.
 
     Args:
         prompt (str): The orchestrator prompt.
@@ -473,6 +662,8 @@ async def _run_tracelens_skill_codex(
         prefix_path (Path): The command-prefix cache path, reported as an
             artifact.
         tracelens_root (Path): The TraceLens project root; the session cwd.
+        capture_folder (Path | None): Graph-capture folder the inference perf
+            report writes into, or ``None`` outside graph-capture runs.
         model (str): The Codex model id.
         timeout_sec (float): Wall-clock budget for the turn.
         codex_turn_runner (Callable[..., Awaitable[CodexSessionResult]]): The
@@ -494,7 +685,7 @@ async def _run_tracelens_skill_codex(
             cwd=tracelens_root,
             model=model,
             timeout_sec=timeout_sec,
-            writable_roots=(output_dir,),
+            writable_roots=(output_dir, capture_folder) if capture_folder else (output_dir,),
         )
     except CodexSessionError as exc:
         # The SDK can fail after the report landed; artifact presence decides.
@@ -564,7 +755,7 @@ async def run_tracelens_skill(
             other TraceLens subprocess timeouts); the Claude path bounds each
             SDK message by a stream-idle timeout instead.
         model (str | None): Optional model override. Defaults to
-            ``claude-opus-5`` on the Claude SDK path, or ``$CODEX_MODEL`` /
+            :data:`DEFAULT_CLAUDE_MODEL` on the Claude SDK path, or ``$CODEX_MODEL`` /
             :data:`DEFAULT_CODEX_MODEL` on the Codex SDK path.
         sdk_query_factory (Callable[..., Any] | None): Optional injected query
             factory (used by tests); imported from the SDK when ``None``.
@@ -606,6 +797,7 @@ async def run_tracelens_skill(
             output_dir=output_dir,
             prefix_path=prefix_path,
             tracelens_root=tracelens_root,
+            capture_folder=capture_folder,
             model=codex_model,
             timeout_sec=max(60.0, float(budget_minutes) * 60.0),
             codex_turn_runner=codex_turn_runner or run_codex_turn,
@@ -633,8 +825,10 @@ async def run_tracelens_skill(
         "allowed_tools": DEFAULT_ALLOWED_TOOLS,
         "stderr": lambda line: log(f"[claude-sdk] {line.rstrip()}") if log else None,
     }
-    resolved_model = resolved_model or "claude-opus-5"
+    resolved_model = resolved_model or DEFAULT_CLAUDE_MODEL
     kwargs["model"] = resolved_model
+    # Stream events time each model request of the run onto the trajectory ledger.
+    kwargs["include_partial_messages"] = True
     # Roots Bash relative paths at TraceLens; harmless in tests via FakeOptions.
     kwargs["cwd"] = str(tracelens_root)
     kwargs.update(
@@ -644,6 +838,13 @@ async def run_tracelens_skill(
             operation="analyze_trace",
         )
     )
+    idle_timeout = _resolve_stream_idle_timeout_sec()
+    tool_idle_timeout = _resolve_tool_idle_timeout_sec(idle_timeout)
+    # In print mode the CLI terminates background sub-agents still running 600s
+    # after the main turn goes quiet, before the in-flight bound below applies.
+    kwargs.setdefault("env", {})["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = os.environ.get(
+        "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", str(int(tool_idle_timeout * 1000))
+    )
 
     try:
         options = sdk_options_cls(**kwargs)
@@ -652,57 +853,21 @@ async def run_tracelens_skill(
         kwargs.pop("cwd", None)
         options = sdk_options_cls(**kwargs)
     chunks: list[str] = []
-    sdk_error = ""
     if log:
         log(f"TraceLens SDK runner: prefix cache={prefix_path}")
     # Drive the SDK stream manually so each next message is bounded by a
     # per-message idle timeout (inactivity, not a total budget); the in-process
     # SDK has no client-side read timeout and would otherwise block on a stall.
-    idle_timeout = _resolve_stream_idle_timeout_sec()
-    tool_idle_timeout = _resolve_tool_idle_timeout_sec(idle_timeout)
-    tool_in_flight = False
-    stream = sdk_query_factory(prompt=prompt, options=options)
-    stream_iter = stream.__aiter__() if hasattr(stream, "__aiter__") else stream
-    try:
-        while True:
-            wait_for = tool_idle_timeout if tool_in_flight else idle_timeout
-            try:
-                if wait_for > 0:
-                    message = await asyncio.wait_for(stream_iter.__anext__(), timeout=wait_for)
-                else:
-                    message = await stream_iter.__anext__()
-            except StopAsyncIteration:
-                break
-            except asyncio.TimeoutError:
-                # Stream went quiet past its bound: abort and tear the generator
-                # down so its transport/subprocess does not leak. Name the phase —
-                # silence during a tool call means the tool overran its bound, not
-                # that the gateway died.
-                phase = "while a tool call was in flight" if tool_in_flight else "with no tool call in flight"
-                sdk_error = f"stream idle timeout: no SDK message for {wait_for:.0f}s {phase}"
-                if log:
-                    log(f"[claude-sdk] WARNING: {sdk_error}")
-                aclose = getattr(stream_iter, "aclose", None)
-                if aclose is not None:
-                    try:
-                        await asyncio.wait_for(aclose(), timeout=10.0)
-                    except (asyncio.TimeoutError, Exception):  # noqa: BLE001
-                        pass
-                break
-            transition = _tool_call_transition(message)
-            if transition == "start":
-                tool_in_flight = True
-            elif transition == "end":
-                tool_in_flight = False
-            for text in _iter_message_text(message):
-                chunks.append(text)
-                if log:
-                    log(f"[claude-sdk] {text[:1000]}")
-    except Exception as exc:  # noqa: BLE001
-        # SDK may error after writing artifacts; treat artifact presence as truth.
-        sdk_error = f"{type(exc).__name__}: {exc}"
-        if log:
-            log(f"[claude-sdk] WARNING: {sdk_error}")
+    with _TrajectoryCall(resolved_model) as trajectory:
+        sdk_error = await _drive_sdk_stream(
+            sdk_query_factory(prompt=prompt, options=options),
+            chunks=chunks,
+            idle_timeout=idle_timeout,
+            tool_idle_timeout=tool_idle_timeout,
+            observe=trajectory.observe,
+            log=log,
+        )
+        trajectory.finish(sdk_error)
 
     # Final report is ``analysis.md``.
     report_path = output_dir / "analysis.md"
@@ -992,7 +1157,8 @@ def _row_to_candidate(
 
     Returns:
         dict[str, Any] | None: The candidate dict, or ``None`` when the row is
-            malformed (cell count mismatch) or names a placeholder operation.
+            malformed (cell count mismatch) or names a placeholder operation
+            with no device kernel symbol to stand in for it.
     """
     if len(cells) != len(headers):
         return None
@@ -1000,9 +1166,17 @@ def _row_to_candidate(
     # Preserve trailing extra columns verbatim for downstream consumers.
     extra_columns = {key: value for key, value in record.items() if key not in _DATA_TABLE_CANONICAL_KEY_SET}
 
+    # Device kernel symbol(s) used to disambiguate dispatch ops; keep the full
+    # list and use the first for matching. Placeholders normalize to "".
+    device_kernel_names = _parse_kernel_name_cell(record.get("kernel name", ""))
+    device_kernel_name = device_kernel_names[0] if device_kernel_names else ""
     name = record.get("operation", "").strip()
     if not name or name in {"-", "—"}:
-        return None
+        if not device_kernel_name:
+            return None
+        # Graph-collapsed trace (HIP/CUDA graph): TraceLens' deterministic
+        # fallback leaves Operation as "—" and the device symbol IS the identity.
+        name = device_kernel_name
     args = record.get("args", "").replace("<br>", "\n").strip()
     shapes = [s.strip() for s in args.split("\n") if s.strip() and s.strip() not in {"-", "—"}]
     kernel_path = record.get("kernel path", "").strip()
@@ -1010,10 +1184,6 @@ def _row_to_candidate(
     # "Not found" cannot survive as a fake source_file (see the constant).
     if kernel_path.lower() in _LAUNCHER_PATH_PLACEHOLDERS:
         kernel_path = ""
-    # Device kernel symbol(s) used to disambiguate dispatch ops; keep the full
-    # list and use the first for matching. Placeholders normalize to "".
-    device_kernel_names = _parse_kernel_name_cell(record.get("kernel name", ""))
-    device_kernel_name = device_kernel_names[0] if device_kernel_names else ""
     # Store only the path in source_file; line/function annotations have their
     # own fields and otherwise make extension-based routing see an unknown file.
     resolved_source_file, resolved_line, resolved_func = _parse_launcher_path(kernel_path)
@@ -1208,7 +1378,7 @@ def parse_analysis_md(md_path: Path, top_k: int = 10) -> list[dict[str, Any]]:
         return []
     try:
         text = md_path.read_text(encoding="utf-8")
-    except Exception:
+    except OSError:
         return []
 
     pitems = _extract_pitem_categories(text)
@@ -1326,8 +1496,8 @@ def _launcher_frame_from_dict(obj: dict) -> str | None:
     wrappers = obj.get("wrappers")
     if isinstance(wrappers, str):
         try:
-            wrappers = ast.literal_eval(wrappers)
-        except (ValueError, SyntaxError):
+            wrappers = _safe_literal_eval(wrappers)
+        except _LITERAL_EVAL_ERRORS:
             wrappers = []
     if isinstance(wrappers, (list, tuple)):
         for frame in wrappers:
@@ -1364,8 +1534,8 @@ def _parse_launcher_path(kernel_path: str) -> tuple[str, int | None, str | None]
         stripped = kernel_path.strip()
         if stripped.startswith("{") and stripped.endswith("}") and "entry_point" in stripped:
             try:
-                parsed_obj = ast.literal_eval(stripped)
-            except (ValueError, SyntaxError):
+                parsed_obj = _safe_literal_eval(stripped)
+            except _LITERAL_EVAL_ERRORS:
                 parsed_obj = None
             frame = _launcher_frame_from_dict(parsed_obj) if isinstance(parsed_obj, dict) else None
             if not frame:
@@ -1638,9 +1808,9 @@ def aggregate_by_source_function(
         if not root.is_dir():
             root = None
 
-    # Both TraceLens routes use the same versioned identity builder. Operation
-    # normalization keeps different kernels in one source separate while
-    # template/shape instances of one operator merge.
+    # Versioned identity builder. Operation normalization keeps different
+    # kernels in one source separate while template/shape instances of one
+    # operator merge.
     groups: dict[str, dict[str, Any]] = {}
     for cand in candidates:
         if not isinstance(cand, dict):

@@ -6,12 +6,9 @@
 from __future__ import annotations
 
 
-from hyperloom.orchestrator.loop.coordinator import (
-    Coordinator,
-    _first_present,
-    _format_inbox_event,
-    _lifecycle_paths,
-)
+from hyperloom.orchestrator.loop.coordinator import Coordinator
+from hyperloom.orchestrator.loop.conversation import _first_present, _format_inbox_event
+from hyperloom.orchestrator.loop.intent_router import _lifecycle_paths
 from hyperloom.orchestrator.bus.message_bus import Message
 from hyperloom.orchestrator.policy.gate import SPECIALIST_FROM_AGENT_PREFIX
 
@@ -192,9 +189,9 @@ def test_gap_layer_for_action_mapping():
 
 
 def test_gap_layer_for_action_follows_framework_kind():
-    # A framework-layer gap on a scriptable workload must name the rewrite
-    # specialist: seeding it with serving_specialist is what steered a custom
-    # workload back onto the serving surface once EXPLORE picked the gap up.
+    # A framework-layer gap on a scriptable workload must name the rewrite specialist: seeding it with
+    # serving_specialist is what steered a custom workload back onto the serving surface once EXPLORE picked the gap
+    # up.
     assert Coordinator._gap_layer_for_action("sweep", "custom") == (
         "framework",
         "framework_rewrite_specialist",

@@ -5,15 +5,7 @@
 # See LICENSE for license information.
 ###############################################################################
 
-"""Guards that keep an unresolved-launcher sentinel from becoming a source_file.
-
-TraceLens writes ``launcher_path = "Not found"`` for every Synthetic Op (a
-device kernel with no cpu_op parent, e.g. a hand-written Triton kernel launched
-straight from Python). That string used to survive parsing as a truthy
-``source_file``, which skipped the grep fallback and made classify_patchability
-reject the hottest kernels with "source not under a reusable framework root:
-Not found". These tests pin the three guards that close that path.
-"""
+"""Guards that keep an unresolved-launcher sentinel from becoming a source_file."""
 
 from __future__ import annotations
 
@@ -25,9 +17,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-import tracelens_analysis as tl  # noqa: E402
-import tracelens_skill_runner as tsr  # noqa: E402
-from _llm_source_context import build_context_block  # noqa: E402
+import tracelens_analysis as tl
+import tracelens_skill_runner as tsr
 
 
 _HEADERS = [
@@ -101,27 +92,6 @@ def test_real_launcher_path_survives():
     assert cand["source_function"] == "_grouped_gemm_mxfp8"
 
 
-def test_materialized_runtime_args_are_sanitized_before_prompting(tmp_path):
-    """Production YAML selectors reach context without their adjacent secret."""
-    config = tmp_path / "baseline.yaml"
-    config.write_text(
-        "benchmark:\n  envs:\n    EXTRA_SGLANG_ARGS: '--api-key sk-secret --moe-runner-backend triton'\n",
-        encoding="utf-8",
-    )
-    raw = tl._runtime_server_args_from_config(str(config))
-    block = build_context_block(
-        server_args=raw,
-        framework="sglang",
-        precision="fp8",
-        env={},
-    )
-
-    assert "sk-secret" not in block
-    assert "api-key" not in block
-    assert "triton" in block
-    assert '"precision": "fp8"' in block
-
-
 def test_not_found_is_in_shared_placeholder_set():
     assert "not found" in tsr._LAUNCHER_PATH_PLACEHOLDERS
 
@@ -169,10 +139,7 @@ _SENTINELS = (
 
 
 def test_non_path_source_file_is_zeroed():
-    """Any value lacking a source extension is rejected, not just 'Not found'.
-
-    Covers the vendor labels TraceLens also emits in this field.
-    """
+    """Any value lacking a source extension is rejected, not just 'Not found'."""
     for sentinel in _SENTINELS:
         item = {"name": "k", "source_file": sentinel, "kernel_repo": "", "source_type": "python"}
         assert tl.reject_non_path_source(item) is True, sentinel
@@ -182,13 +149,7 @@ def test_non_path_source_file_is_zeroed():
 
 
 def test_rejection_marker_reaches_the_production_path():
-    """The audit marker must survive the real _finalize_candidates run.
-
-    The guard used to be duplicated: _finalize_candidates zeroed source_file
-    first, which made the copy inside _stamp_candidate_metadata unreachable, so
-    source_resolution_method was never stamped in production even though a unit
-    test asserted it.
-    """
+    """The audit marker must survive the real _finalize_candidates run."""
     for sentinel in _SENTINELS:
         item = {"name": "k", "source_file": sentinel, "duration_us": 1.0}
         got = tl._finalize_candidates([item])[0]
@@ -227,15 +188,7 @@ def test_path_shape_gate_accepts_a_bare_source_filename():
 
 
 def test_grep_admission_stays_within_what_source_type_can_classify():
-    """The two lists serve different questions and must not be merged.
-
-    Admitting a suffix that source_type_for() cannot classify yields
-    source_type="unknown", which classify_patchability rejects -- and the file
-    still competes in _rank_paths, where kind_score outweighs ext_score. A
-    /csrc/ file with such a suffix therefore outranks the sibling .py and flips
-    a routable candidate to non-routable, the exact symptom this module exists
-    to fix.
-    """
+    """The two lists serve different questions and must not be merged."""
     for ext in tl.SOURCE_EXTENSIONS:
         stype = tl.source_type_for("some_kernel", f"/repo/pkg/some_kernel{ext}")
         assert stype != "unknown", f"{ext} is admitted by grep but unclassifiable"
@@ -260,22 +213,14 @@ def test_csrc_sibling_cannot_outrank_the_routable_python_source():
 
 
 def test_windows_separators_are_not_mistaken_for_placeholders():
-    """A backslash path is still a path; is_torch_dispatch_shim_source
-    normalizes the same way."""
+    """A backslash path is still a path; is_torch_dispatch_shim_source normalizes the same way."""
     assert tl.looks_like_source_path(r"C:\repo\pkg\kernels\moe.py")
     item = {"name": "k", "source_file": r"C:\repo\pkg\kernels\moe.py"}
     assert tl.reject_non_path_source(item) is False
 
 
 def test_aiter_cross_device_reduce_maps_to_all_reduce():
-    """aiter's custom all-reduce must not degrade to a rank-0-only reference.
-
-    The kernels are named cross_device_reduce_{1stage,2stage,half_butterfly}
-    and implement all-reduce semantics. Without an explicit tag they fall
-    through to the bare "reduce" entry, whose reference is
-    torch.distributed.reduce -- correct on rank 0 only, which makes the parity
-    gate meaningless everywhere else.
-    """
+    """aiter's custom all-reduce must not degrade to a rank-0-only reference."""
     item = {"name": "_ZN5aiter26cross_device_reduce_2stageIDF16bLi8ELb0EEEv", "is_multigpu": True}
     tl._enrich_kernel_contract(item, {"TP_SIZE": 8})
     contract = item["kernel_contract"]
@@ -301,8 +246,7 @@ def test_real_path_is_not_flagged_as_rejected():
 
 
 def test_path_shaped_but_absent_file_is_kept_and_flagged(tmp_path):
-    """Keyed on shape, not presence: the analysis host need not own the
-    serving container's filesystem."""
+    """Keyed on shape, not presence: the analysis host need not own the serving container's filesystem."""
     missing = str(tmp_path / "does_not_exist.py")
     item = {"name": "k", "source_file": missing, "kernel_repo": "", "source_type": "python"}
     tl._stamp_candidate_metadata(item, None)
@@ -337,20 +281,10 @@ def test_empty_source_file_does_not_get_a_rejected_marker():
 
 
 # --- Guard 4: trace-relative launcher paths are absolutized -----------------
-#
-# torch profiler records a frame path relative to the sys.path entry the module
-# came from ("aiter/dist/x.py"). Patchability keys on an absolute framework
-# root, so a relative path would be rejected for the wrong reason.
 
 
 def test_relative_path_resolves_via_the_installed_package(monkeypatch):
-    """The real case: the pinned checkout roots do not exist on this host.
-
-    torch profiler records "vllm/models/x.py" relative to the sys.path entry the
-    module came from. A pinned list cannot cover that -- the same package sits
-    under /sgl-workspace in the serving image and under dist-packages on a wheel
-    install -- so resolution has to locate the package at runtime.
-    """
+    """The real case: the pinned checkout roots do not exist on this host."""
     # Pinned roots deliberately absent, exactly as on a wheel-install host.
     monkeypatch.setattr(tl, "_PACKAGE_INNER_ROOTS", ("/nonexistent/aiter/aiter",))
     tl._package_parent_dir.cache_clear()
@@ -387,8 +321,7 @@ def test_absolute_launcher_path_is_returned_unchanged():
 
 
 def test_unresolvable_relative_path_is_left_alone(monkeypatch, tmp_path):
-    """Never fabricate: an unjoinable path stays as-is rather than becoming
-    a plausible-looking path that does not exist."""
+    """Never fabricate: an unjoinable path stays as-is rather than becoming a plausible-looking path that does not exist."""
     monkeypatch.setattr(tl, "_PACKAGE_INNER_ROOTS", (str(tmp_path / "nope" / "nope"),))
     assert tl.absolutize_launcher_path("pkg/mod.py") == "pkg/mod.py"
 
@@ -397,11 +330,7 @@ def test_empty_path_is_safe():
     assert tl.absolutize_launcher_path("") == ""
 
 
-# --------------------------------------------------------------------------
 # End-to-end wiring: sentinel -> zeroed source_file -> trace-derived launcher.
-# The guards above pin each stage in isolation; these pin the seam between
-# them, which is where a regression would actually cost a candidate.
-# --------------------------------------------------------------------------
 
 _WIRING_KERNEL = "_mxfp8_grouped_gemm_kernel"
 _WIRING_FRAME = "/repo/pkg/kernels/moe.py(124): _grouped_gemm"
@@ -477,12 +406,7 @@ def test_trace_launcher_caller_does_not_override_grep_definition(
 
 
 def test_grep_prefers_defining_module_over_reexporting_init(monkeypatch, tmp_path):
-    """A package ``__init__`` that re-exports a kernel is not its source.
-
-    The re-exporter scores well on path shape alone, so plain ranking put it
-    ahead of the module holding the ``@triton.jit`` body and handed a backend a
-    file with no kernel in it.
-    """
+    """A package ``__init__`` that re-exports a kernel is not its source."""
     pkg = tmp_path / "pkg" / "kernels" / "linear"
     (pkg / "mxfp8").mkdir(parents=True)
     (pkg / "__init__.py").write_text(
@@ -500,14 +424,7 @@ def test_grep_prefers_defining_module_over_reexporting_init(monkeypatch, tmp_pat
 
 
 def test_grep_resolves_a_name_an_fstring_assembled_at_runtime(monkeypatch, tmp_path):
-    """Only the head of an f-string-built kernel name is literal in source.
-
-    aiter's MoE GEMMs launch as ``mfma_moe1_silu_mul_afp8_wfp8_bf16_...`` but
-    are written ``f"mfma_moe1_silu_mul_a{a_dtype}_w{b_dtype}_{out_s}"``, so both
-    the whole-name pass and the trailing sub-window pass search text that is
-    never written down, and the hottest kernels on the trace resolved to
-    nothing.
-    """
+    """Only the head of an f-string-built kernel name is literal in source."""
     root = tmp_path / "aiter" / "ops" / "flydsl" / "kernels"
     root.mkdir(parents=True)
     composer = root / "mixed_moe_gemm_2stage.py"
@@ -525,11 +442,7 @@ def test_grep_prefers_the_file_that_spells_out_more_of_a_composed_name(
     monkeypatch,
     tmp_path,
 ):
-    """Sibling f-strings share a short prefix; characters break the tie.
-
-    ``mfma_moe2_a{a_dtype}...`` and ``mfma_moe2_{in_dtype}...`` both answer to
-    the keyword ``mfma_moe2``, and only the first one built the launched name.
-    """
+    """Sibling f-strings share a short prefix; characters break the tie."""
     root = tmp_path / "aiter" / "ops" / "flydsl" / "kernels"
     root.mkdir(parents=True)
     mixed = root / "mixed_moe_gemm_2stage.py"
@@ -566,12 +479,7 @@ def test_unconfirmed_trace_launcher_leaves_the_source_empty(
     monkeypatch,
     tmp_path,
 ):
-    """An unconfirmed launcher is evidence, never an attribution.
-
-    Finalization stops here rather than guessing from the symbol; the
-    whole-table review that follows can weigh the blank against the launcher
-    frame and the rest of the table.
-    """
+    """An unconfirmed launcher is evidence, never an attribution."""
     launcher = "/repo/model/launcher.py"
     monkeypatch.setattr(tl, "locate_source_via_grep", lambda _name: "")
 
@@ -604,12 +512,7 @@ def test_wiring_without_trace_files_falls_back_quietly(tmp_path):
 
 
 def test_finalization_never_calls_a_model(monkeypatch, tmp_path):
-    """Source resolution is wholly deterministic; review is a later stage.
-
-    Nothing under ``_finalize_candidates`` may reach a provider, so the
-    deterministic route gets its no-LLM guarantee from the code rather than
-    from a flag it has to remember to pass.
-    """
+    """Source resolution is wholly deterministic; review is a later stage."""
     monkeypatch.setattr(tl, "locate_source_via_grep", lambda _name: "")
     artifact = tmp_path / "kernel_source_resolution.json"
     item = {

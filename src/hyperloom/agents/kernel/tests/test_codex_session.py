@@ -1,13 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Contract tests for the shared Codex Agent SDK session helper.
-
-Hyperloom routes every OpenAI-side LLM interaction through the Codex Agent SDK
-rather than bare API calls, so this module owns the gateway mapping, the sandbox
-and approval policy, the turn timeout and the usage normalization for all of
-them. The SDK is mocked throughout: no test may reach the network.
-"""
+"""Contract tests for the shared Codex Agent SDK session helper."""
 
 from __future__ import annotations
 
@@ -40,9 +34,8 @@ _CODEX_ENV = (
 
 _SECRET = "sk-do-not-leak-this-value"
 
-# The operator-facing sandbox contract, spelled out rather than imported: a
-# rename of the variable or of an accepted value is a breaking change for every
-# deployment that set it, so it has to fail here.
+# The operator-facing sandbox contract, spelled out rather than imported: a rename of the variable or of an accepted
+# value is a breaking change for every deployment that set it, so it has to fail here.
 _SANDBOX_MODE_ENV = "HYPERLOOM_CODEX_SANDBOX_MODE"
 _LEGACY_EXTERNAL_SANDBOX_ENV = "HYPERLOOM_CODEX_EXTERNAL_SANDBOX"
 _WRITABLE_ROOTS = (Path("/tmp/out"),)
@@ -74,8 +67,7 @@ def _override_value(overrides: tuple[str, ...], key: str) -> str:
     raise AssertionError(f"override {key!r} not found in {overrides!r}")
 
 
-# --------------------------------------------------------------------------- #
-# Fake SDK
+# --------------------------------------------------------------------------- # Fake SDK
 # --------------------------------------------------------------------------- #
 
 
@@ -158,9 +150,8 @@ class _FakeThread:
         self._result = result
         self._hang = hang
         self._honor_interrupt = honor_interrupt
-        # A serial, not id(self): the tests below count distinct threads, and a
-        # reset frees the previous one, after which CPython hands the same heap
-        # address to its replacement often enough to fail the count in CI.
+        # A serial, not id(self): the tests below count distinct threads, and a reset frees the previous one, after
+        # which CPython hands the same heap address to its replacement often enough to fail the count in CI.
         record["threads_made"] = record.get("threads_made", 0) + 1
         self._serial = record["threads_made"]
 
@@ -297,17 +288,12 @@ def _install_transient_codex_home_cleanup_race(
     return state
 
 
-# --------------------------------------------------------------------------- #
-# Gateway override construction
+# --------------------------------------------------------------------------- # Gateway override construction
 # --------------------------------------------------------------------------- #
 
 
 def test_provider_overrides_pass_the_key_env_name_not_its_value():
-    """The API key must reach Codex by variable NAME only.
-
-    Config overrides become app-server launch arguments, so a copied secret
-    would be visible to anything that can read the process table.
-    """
+    """The API key must reach Codex by variable NAME only."""
     overrides = cs.codex_provider_overrides(env=_gateway_env())
 
     assert _override_value(overrides, "model_providers.hyperloom.env_key") == '"OPENAI_API_KEY"'
@@ -325,19 +311,6 @@ def test_provider_overrides_select_the_responses_wire_api():
         == '"https://gateway.example/api/v1/llm-proxy/Unified/v1"'
     )
     assert _override_value(overrides, "model_providers.hyperloom.name") == '"hyperloom"'
-
-
-def test_provider_overrides_name_the_gateway_key_variable_that_is_set():
-    """``LLM_GATEWAY_KEY`` deployments must be pointed at their own variable."""
-    env = {
-        "LLM_GATEWAY_KEY": _SECRET,
-        "OPENAI_BASE_URL": "https://gateway.example/Unified/v1",
-    }
-
-    overrides = cs.codex_provider_overrides(env=env)
-
-    assert _override_value(overrides, "model_providers.hyperloom.env_key") == '"LLM_GATEWAY_KEY"'
-    assert not any(_SECRET in override for override in overrides)
 
 
 def test_resolved_provider_config_keeps_literal_header_values_out_of_overrides():
@@ -394,11 +367,7 @@ def test_resolved_provider_config_uses_derived_anthropic_headers_without_exposin
 
 
 def test_provider_overrides_reject_a_header_codex_cannot_express():
-    """A header name outside the TOML bare-key charset must fail loudly.
-
-    Codex's ``-c key=value`` parser reads a dotted bare-key path, so silently
-    emitting a dotted header name would corrupt the whole provider table.
-    """
+    """A header name outside the TOML bare-key charset must fail loudly."""
     with pytest.raises(cs.CodexSessionUnavailableError, match="not a valid Codex config key"):
         cs.resolve_codex_provider_config(env=_gateway_env(OPENAI_CUSTOM_HEADERS="x.api.key: value"))
 
@@ -410,32 +379,39 @@ def test_provider_overrides_require_an_explicit_base_url():
 
 
 def test_provider_overrides_require_a_credential():
-    """A missing credential fails before the SDK spends a turn."""
+    """A missing credential fails before the SDK spends a turn.
+
+    ``LLM_GATEWAY_KEY`` is retired, so a host carrying only that name counts as
+    uncredentialed rather than as a gateway deployment.
+    """
     with pytest.raises(cs.CodexSessionUnavailableError, match="credential is missing"):
-        cs.codex_provider_overrides(env={"OPENAI_BASE_URL": "https://gateway.example/Unified/v1"})
+        cs.codex_provider_overrides(
+            env={
+                "OPENAI_BASE_URL": "https://gateway.example/Unified/v1",
+                "LLM_GATEWAY_KEY": _SECRET,
+            }
+        )
 
 
 def test_api_key_env_name_follows_llm_config_precedence():
-    """The preferred variable wins, then OPENAI_API_KEY, then LLM_GATEWAY_KEY."""
+    """The caller's preferred variable wins, then OPENAI_API_KEY."""
     both = {"OPENAI_API_KEY": "a", "LLM_GATEWAY_KEY": "b"}
 
     assert cs.api_key_env_name(env=both) == "OPENAI_API_KEY"
-    assert cs.api_key_env_name(env={"LLM_GATEWAY_KEY": "b"}) == "LLM_GATEWAY_KEY"
     assert cs.api_key_env_name(api_key_env="SAFE_API_KEY", env={"SAFE_API_KEY": "c", **both}) == "SAFE_API_KEY"
 
 
 def test_api_key_env_name_lists_every_candidate_when_none_is_set():
     """The error must tell the operator which variables were checked."""
     with pytest.raises(cs.CodexSessionUnavailableError) as excinfo:
-        cs.api_key_env_name(env={})
+        cs.api_key_env_name(api_key_env="SAFE_API_KEY", env={})
 
     message = str(excinfo.value)
+    assert "SAFE_API_KEY" in message
     assert "OPENAI_API_KEY" in message
-    assert "LLM_GATEWAY_KEY" in message
 
 
-# --------------------------------------------------------------------------- #
-# Sandbox and approval selection
+# --------------------------------------------------------------------------- # Sandbox and approval selection
 # --------------------------------------------------------------------------- #
 
 
@@ -451,14 +427,7 @@ def test_codex_sandbox_bypass_is_full_access_without_writable_roots():
 
 
 def test_codex_sandbox_bypass_mode_lifts_the_preset_sandbox_for_a_write_scope():
-    """``bypass`` must hand a writing session full access.
-
-    Codex builds its ``read-only`` and ``workspace-write`` presets on
-    bubblewrap. Hyperloom's runtime container ships no ``bwrap``, so under
-    either preset every shell command aborts with ``bwrap: Failed to make /
-    slave: Permission denied`` before its body runs -- which is how TraceLens
-    lost the ability to produce ``analysis.md`` on the OpenAI-only path.
-    """
+    """``bypass`` must hand a writing session full access."""
     sandbox = cs.codex_sandbox(_FakeSDKModule, writable_roots=_WRITABLE_ROOTS, sandbox_mode="bypass")
 
     assert sandbox == _FakeSandbox.full_access
@@ -582,11 +551,7 @@ def test_probe_codex_sandbox_executes_a_real_bwrap_sandbox(returncode, expected)
 
 
 def test_run_codex_turn_defaults_to_workspace_write_for_a_write_scope(tmp_path, monkeypatch):
-    """A writing turn uses the least-privilege usable preset by default.
-
-    Hosts without a functional bubblewrap sandbox fail the separate capability
-    probe; they do not silently receive full access.
-    """
+    """A writing turn uses the least-privilege usable preset by default."""
     output = tmp_path / "out"
     output.mkdir()
     record = _install_fake_sdk(monkeypatch)
@@ -788,8 +753,8 @@ def test_run_codex_turn_denies_approvals_and_scopes_writes(tmp_path, monkeypatch
     assert thread_options["model_provider"] == cs.CODEX_PROVIDER_NAME
     assert thread_options["developer_instructions"] == "instructions"
 
-    # Turn-level options gate the tools for the turn that actually runs, so they
-    # are set explicitly rather than inherited from the thread.
+    # Turn-level options gate the tools for the turn that actually runs, so they are set explicitly rather than
+    # inherited from the thread.
     turn_options = record["turn_options"]
     assert turn_options["approval_mode"] == _FakeApprovalMode.deny_all
     assert turn_options["sandbox"] == _FakeSandbox.workspace_write
@@ -1071,8 +1036,7 @@ def test_run_codex_turn_honors_an_explicit_codex_binary(tmp_path, monkeypatch):
     assert record["config"].kwargs["codex_bin"] == "/opt/bin/codex"
 
 
-# --------------------------------------------------------------------------- #
-# Timeout and failure handling
+# --------------------------------------------------------------------------- # Timeout and failure handling
 # --------------------------------------------------------------------------- #
 
 
@@ -1098,11 +1062,7 @@ def test_run_codex_turn_interrupts_a_turn_that_outlives_its_timeout(tmp_path, mo
 
 
 def test_run_codex_turn_cancels_a_turn_that_ignores_the_interrupt(tmp_path, monkeypatch):
-    """A turn that will not stop must still be cancelled, not leaked.
-
-    Leaving the task pending would keep the SDK transport alive past the run and
-    surface later as an unretrieved-exception warning from an unrelated phase.
-    """
+    """A turn that will not stop must still be cancelled, not leaked."""
     monkeypatch.setattr(cs, "_INTERRUPT_TIMEOUT_SEC", 0.05)
     record = _install_fake_sdk(monkeypatch, hang=True, honor_interrupt=False)
 
@@ -1207,13 +1167,12 @@ def test_load_codex_sdk_returns_the_installed_module():
     assert cs.load_codex_sdk() is sdk
 
 
-# --------------------------------------------------------------------------- #
-# Result and usage normalization
+# --------------------------------------------------------------------------- # Result and usage normalization
 # --------------------------------------------------------------------------- #
 
 
 def test_run_codex_turn_normalizes_usage(tmp_path, monkeypatch):
-    """The turn's token usage is normalized into the canonical four-key dict."""
+    """The turn's token usage is normalized into the canonical four-key dict, input counting only uncached tokens."""
     result = _FakeTurnResult(
         final_response="  wrote the report  ",
         usage=type(
@@ -1248,7 +1207,7 @@ def test_run_codex_turn_normalizes_usage(tmp_path, monkeypatch):
     assert session.thread_id == "thread-fake"
     assert session.error == ""
     assert session.usage == {
-        "input_tokens": 120,
+        "input_tokens": 108,
         "output_tokens": 34,
         "cache_read_input_tokens": 12,
         "reasoning_output_tokens": 4096,
@@ -1256,11 +1215,7 @@ def test_run_codex_turn_normalizes_usage(tmp_path, monkeypatch):
 
 
 def test_run_codex_turn_surfaces_an_in_band_turn_error(tmp_path, monkeypatch):
-    """A turn that completes carrying an error is not a success.
-
-    A provider-side failure can end the turn with no answer, so the message has
-    to reach the caller instead of looking like a deliberate no-op.
-    """
+    """A turn that completes carrying an error is not a success."""
     error = type("_Error", (), {"message": "rate limit exceeded"})()
     _install_fake_sdk(monkeypatch, result=_FakeTurnResult(final_response=None, error=error))
 
@@ -1304,14 +1259,7 @@ def test_normalize_codex_usage_accepts_a_plain_mapping():
 
 
 def test_normalize_codex_usage_carries_the_window_the_provider_reports():
-    """Keep the window Codex states for this model, beside the counts it states.
-
-    ``model_context_window`` sits on the usage object next to ``last``, so
-    reading only the breakdown dropped it. The compaction trigger is a fraction
-    of the window, and an unlisted model falls back to a conservative 200k --
-    for a model Codex reports at 258400, that compacts a fifth early, and
-    compaction resets the conversation.
-    """
+    """Keep the window Codex states for this model, beside the counts it states."""
     usage = {
         "last": {"input_tokens": 3, "output_tokens": 4},
         "model_context_window": 258_400,
@@ -1339,8 +1287,7 @@ def test_normalize_codex_usage_tolerates_missing_and_malformed_counts():
     }
 
 
-# --------------------------------------------------------------------------- #
-# Long-lived sessions
+# --------------------------------------------------------------------------- # Long-lived sessions
 # --------------------------------------------------------------------------- #
 
 
@@ -1460,8 +1407,7 @@ def test_codex_session_turn_before_start_is_rejected(tmp_path):
         asyncio.run(session.turn("p", timeout_sec=5.0))
 
 
-# --------------------------------------------------------------------------- #
-# Installed-SDK contract
+# --------------------------------------------------------------------------- # Installed-SDK contract
 # --------------------------------------------------------------------------- #
 
 

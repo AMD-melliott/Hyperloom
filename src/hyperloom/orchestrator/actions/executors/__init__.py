@@ -1,11 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Concrete ActionRunner implementations.
-
-Each runner is an ``async def fn(RunnerContext) -> dict`` dispatched by
-SubAgentRunner when a queued task's ``kind`` matches its registered name.
-"""
+"""Concrete ActionRunner implementations."""
 
 from .baseline import (
     BaselineExecutor,
@@ -20,21 +16,18 @@ from .conc_sweep import ConcSweepExecutor, conc_sweep_executor
 from .report import ReportExecutor, report_executor
 from .session_breakdown import SessionBreakdownExecutor, session_breakdown_executor
 from .target_analysis import TargetAnalysisExecutor
-from .recover import RecoverExecutor, recover_executor
 
 __all__ = [
     "BaselineExecutor",
     "ConcSweepExecutor",
     "DEFAULT_KEEP_THRESHOLD_PCT",
     "ExploreExecutor",
-    "RecoverExecutor",
     "ReportExecutor",
     "SessionBreakdownExecutor",
     "TargetAnalysisExecutor",
     "baseline_executor",
     "conc_sweep_executor",
     "explore_executor",
-    "recover_executor",
     "report_executor",
     "session_breakdown_executor",
 ]

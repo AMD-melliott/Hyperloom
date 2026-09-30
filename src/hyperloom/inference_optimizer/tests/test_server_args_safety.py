@@ -23,8 +23,8 @@ def test_allows_speculative_config_json():
 
 
 def test_allows_speculative_draft_model_path():
-    # Regression: a legitimate tuning flag ending in ``-path`` must not be
-    # rejected by the broad suffix guard (eagle3 speculative-decoding sweep).
+    # Regression: a legitimate tuning flag ending in ``-path`` must not be rejected by the broad suffix guard (eagle3
+    # speculative-decoding sweep).
     sas.validate_server_args(
         "--speculative-algorithm EAGLE3 --speculative-draft-model-path /wekafs/models/draft --speculative-num-steps 3"
     )
@@ -122,7 +122,7 @@ def test_prepare_shell_safe_extra_args_rejects_denied():
 
 # --- _unwrap_shell_quotes eq-sign form regression ---
 
-from hyperloom.orchestrator.actions.executors._grid_server_args import (
+from hyperloom.inference_optimizer.grid_server_args import (
     _split_args_preserving_json,
     _unwrap_shell_quotes,
 )

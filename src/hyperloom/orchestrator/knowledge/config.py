@@ -83,8 +83,8 @@ class KnowledgeConfig:
         return cls(
             mode=mode,
             local_root=local_root,
-            # The URL also hosts PR Monitor and is therefore useful in local
-            # Recipe mode; only the Recipe bearer token is mode-specific.
+            # The URL also hosts PR Monitor and is therefore useful in local Recipe mode; only the Recipe bearer token
+            # is mode-specific.
             kb_store_url=(kb_store_url if mode is KnowledgeStoreMode.REMOTE else resolve_kb_service_url(env=source)),
             kb_store_token=kb_store_token if mode is KnowledgeStoreMode.REMOTE else "",
             pr_monitor_enabled=resolve_pr_monitor_enabled(source),
@@ -111,11 +111,9 @@ class KnowledgeConfig:
             else:
                 env.pop("KB_STORE_URL", None)
             env.pop("KB_STORE_TOKEN", None)
-        # GBrain credentials are used by the Framework PR client but must
-        # never cross into the KernelForge child.
+        # GBrain credentials must never cross into the KernelForge child.
         env.pop("GBRAIN_BASE_URL", None)
         env.pop("GBRAIN_TOKEN", None)
-        env["KERNELFORGE_GBRAIN_ENABLED"] = "false"
         # Section drafts are owned by the parent inference Recipe publisher.
         env.pop("KB_DRAFT_DIR", None)
         env.pop("KB_WARM_START_DIR", None)
