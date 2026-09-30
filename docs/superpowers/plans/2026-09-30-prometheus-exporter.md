@@ -2131,7 +2131,7 @@ Create `examples/observability/dashboards/hyperloom.json`:
 
 - [ ] **Step 4: Write the Compose stack**
 
-Before writing, look up a current AMD Device Metrics Exporter image tag and its metrics port: run `docker search rocm/device-metrics-exporter` and read the image's Docker Hub page or `https://github.com/ROCm/device-metrics-exporter` README. Put the tag you found where `<TAG>` appears below (5000 is the documented default port; confirm it). Do not leave `<TAG>` in the file.
+The AMD Device Metrics Exporter tag `v1.5.0` and its default port 5000 come from AMD's Docker installation guide (instinct.docs.amd.com/projects/device-metrics-exporter). Confirm the tag pulls with `docker pull rocm/device-metrics-exporter:v1.5.0` before committing.
 
 Create `examples/observability/compose/docker-compose.yml`:
 
@@ -2166,11 +2166,13 @@ services:
     restart: unless-stopped
 
   amd-device-metrics-exporter:
-    image: rocm/device-metrics-exporter:<TAG>
+    image: rocm/device-metrics-exporter:v1.5.0
     network_mode: host
     devices:
       - /dev/kfd
       - /dev/dri
+    volumes:
+      - /sys:/sys:ro  # in-band RAS metrics
     restart: unless-stopped
 
 volumes:
