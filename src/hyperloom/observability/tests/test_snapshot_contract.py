@@ -50,7 +50,7 @@ from .conftest import (
 
 def _dead_pid() -> int:
     """Return a pid that has certainly exited."""
-    proc = subprocess.Popen(["true"])  # noqa: S607 — fixed argv, no shell
+    proc = subprocess.Popen(["true"])
     proc.wait()
     return proc.pid
 

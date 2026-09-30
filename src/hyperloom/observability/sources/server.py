@@ -152,9 +152,9 @@ def discover_base_url() -> str | None:
 
 def _fetch(url: str, *, timeout_s: float) -> str | None:
     """GET ``url`` and return its body, or ``None`` when unreachable."""
-    request = urllib.request.Request(url, headers={"Accept": "text/plain"})  # noqa: S310 - http(s) only, caller-built
+    request = urllib.request.Request(url, headers={"Accept": "text/plain"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
             return response.read().decode("utf-8", errors="replace")
     except (urllib.error.URLError, OSError, ValueError):
         return None

@@ -223,7 +223,7 @@ def test_a_disabled_phase_survives_normalization() -> None:
 
     assert round_tripped[PHASE_KERNEL_AGENT] == 0.0
     assert round_tripped == disabled, "normalization must be a fixed point on a redistributed map"
-    assert sum(round_tripped.values()) == pytest.approx(1.0)
+    assert sum(round_tripped.values()) == pytest.approx(sum(DEFAULT_PHASE_BUDGET_PCT.values()))
 
 
 def test_redistribute_is_idempotent_across_a_normalize_round_trip() -> None:
@@ -244,7 +244,7 @@ def test_redistribute_is_idempotent_across_a_normalize_round_trip() -> None:
         )
 
     assert settled == redistribute_budget_pct(base, kernel_enabled=False, optimize_enabled=True)
-    assert sum(settled.values()) == pytest.approx(1.0)
+    assert sum(settled.values()) == pytest.approx(sum(DEFAULT_PHASE_BUDGET_PCT.values()))
 
 
 def test_an_out_of_range_override_is_still_rejected() -> None:

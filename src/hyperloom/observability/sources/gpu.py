@@ -63,7 +63,7 @@ _NOT_AVAILABLE = "N/A"
 
 def _run(cmd: Sequence[str], *, timeout_s: float) -> subprocess.CompletedProcess[str]:
     """Run a command capturing text output, never raising on non-zero exit."""
-    return subprocess.run(  # noqa: S603 - fixed argv, no shell
+    return subprocess.run(
         list(cmd),
         capture_output=True,
         text=True,
