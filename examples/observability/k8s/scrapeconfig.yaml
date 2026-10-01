@@ -2,6 +2,7 @@
 # Replace GPU_HOST_IP with the host's address and match the labels to your
 # Prometheus's scrapeConfigSelector (kube-prometheus-stack: release: <name>).
 # The run must listen beyond loopback: --metrics-listen 0.0.0.0:9477.
+# The inference server must be reachable too: see README.md (HYPERLOOM_VLLM_URL).
 apiVersion: monitoring.coreos.com/v1alpha1
 kind: ScrapeConfig
 metadata:

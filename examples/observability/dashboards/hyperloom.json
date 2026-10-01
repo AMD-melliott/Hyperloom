@@ -26,14 +26,14 @@
       "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "options": {"textMode": "name", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"refId": "A", "expr": "hyperloom_liveness{session_id=\"$session\"} == 1", "legendFormat": "{{state}}"}]
+      "targets": [{"refId": "A", "expr": "hyperloom_liveness{session_id=\"$session\"} == 1", "legendFormat": "{{state}}", "instant": true}]
     },
     {
       "id": 2, "type": "stat", "title": "Current phase",
       "gridPos": {"x": 4, "y": 0, "w": 5, "h": 4},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "options": {"textMode": "name", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"refId": "A", "expr": "hyperloom_phase_current{session_id=\"$session\"} == 1", "legendFormat": "{{phase}}"}]
+      "targets": [{"refId": "A", "expr": "hyperloom_phase_current{session_id=\"$session\"} == 1", "legendFormat": "{{phase}}", "instant": true}]
     },
     {
       "id": 3, "type": "stat", "title": "Gain over baseline",
@@ -62,6 +62,10 @@
       "id": 6, "type": "state-timeline", "title": "Phase timeline",
       "gridPos": {"x": 0, "y": 4, "w": 24, "h": 5},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {
+        "0": {"text": "idle", "color": "transparent", "index": 0},
+        "1": {"text": "active", "color": "green", "index": 1}
+      }}]}},
       "options": {"showValue": "never", "mergeValues": true},
       "targets": [{"refId": "A", "expr": "hyperloom_phase_current{session_id=\"$session\"}", "legendFormat": "{{phase}}"}]
     },

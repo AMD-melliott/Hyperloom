@@ -44,6 +44,12 @@ docker compose up -d
    kubectl -n monitoring label configmap hyperloom-dashboard grafana_dashboard=1
    ```
 
+`/sd/inference` reports the inference server's address as discovered and does
+not rewrite it, which is usually `127.0.0.1:<port>`. A Prometheus on another
+host would scrape its own loopback, so for a remote Prometheus start the
+inference server on a reachable interface and set `HYPERLOOM_VLLM_URL` to that
+address.
+
 The endpoint has no authentication and reveals the model, framework and
 workload shape. Allow port 9477 only from your Prometheus nodes.
 
