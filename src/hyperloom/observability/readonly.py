@@ -85,7 +85,7 @@ def readonly_connection(
         if conn is not None:
             try:
                 conn.close()
-            except sqlite3.Error:
+            except sqlite3.Error:  # close must never mask the caller's result
                 log.debug("readonly_connection: close failed for %s", db_path, exc_info=True)
 
 
