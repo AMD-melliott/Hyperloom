@@ -32,6 +32,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from hyperloom.common.version import hyperloom_version
+
 from .assemble import resolve_session_dir
 from .collector import SessionMonitor
 from .render.prometheus import PROMETHEUS_CONTENT_TYPE, ExporterInfo, render_prometheus, session_labels
@@ -56,16 +58,6 @@ EXIT_CONFIG_ERROR = 3
 RUN = "run"
 GRACE = "grace"
 EXIT = "exit"
-
-
-def exporter_version() -> str:
-    """Installed Hyperloom version, or ``"unknown"`` for an uninstalled tree."""
-    from importlib.metadata import PackageNotFoundError, version
-
-    try:
-        return version("hyperloom")
-    except PackageNotFoundError:
-        return "unknown"
 
 
 def _read_inference_target() -> SourceResult:
@@ -292,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     watchdog = Watchdog(parent_pid=args.parent_pid, session_dir=session_dir, grace_s=args.grace_sec)
     monitor = SessionMonitor(session_dir, gpu=args.gpu, server=args.server)
     register_inference_sd(monitor)
-    state = ExporterState(monitor=monitor, version=exporter_version(), parent_alive=watchdog.parent_alive)
+    state = ExporterState(monitor=monitor, version=hyperloom_version(), parent_alive=watchdog.parent_alive)
 
     stop = threading.Event()
     for signum in (signal.SIGTERM, signal.SIGINT):

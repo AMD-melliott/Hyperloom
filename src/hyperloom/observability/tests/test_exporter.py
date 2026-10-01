@@ -179,8 +179,12 @@ def test_render_errors_accumulate_across_scrapes(session_dir: Path, monkeypatch)
     )
 
 
-def test_exporter_version_is_a_string() -> None:
-    assert isinstance(exp.exporter_version(), str) and exp.exporter_version()
+def test_exporter_reports_the_optimizer_version() -> None:
+    import hyperloom.inference_optimizer
+    from hyperloom.common.version import UNINSTALLED_VERSION
+
+    assert exp.hyperloom_version() == hyperloom.inference_optimizer.__version__
+    assert exp.hyperloom_version() != UNINSTALLED_VERSION, "the test environment installs the package"
 
 
 class FakeClock:
