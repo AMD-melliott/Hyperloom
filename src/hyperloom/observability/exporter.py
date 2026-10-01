@@ -17,22 +17,45 @@ never writes the session directory.
 
 from __future__ import annotations
 
+import argparse
+import errno
 import json
 import logging
+import os
+import signal
+import sys
 import threading
+import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlsplit
 
+from .assemble import resolve_session_dir
 from .collector import SessionMonitor
 from .render.prometheus import PROMETHEUS_CONTENT_TYPE, ExporterInfo, render_prometheus, session_labels
 from .sources.base import SourceResult
+from .sources.lockfile import LockFileSource
 from .sources.server import discover_base_url
 
 log = logging.getLogger(__name__)
 
 SD_SOURCE = "inference_sd"
 SD_INTERVAL_SEC = 15.0
+DEFAULT_LISTEN = "127.0.0.1:9477"
+DEFAULT_GRACE_SEC = 120.0
+WATCHDOG_INTERVAL_SEC = 2.0
+BIND_RETRY_SEC = 15.0
+
+# Mirrors ``inference_optimizer/tools/status.py``: the exit code reports whether
+# the command ran, so an exporter that could not bind still exits 0.
+EXIT_OK = 0
+EXIT_CONFIG_ERROR = 3
+
+RUN = "run"
+GRACE = "grace"
+EXIT = "exit"
 
 
 def exporter_version() -> str:
@@ -139,3 +162,156 @@ def make_server(state: ExporterState, host: str, port: int) -> ExporterHTTPServe
             log.debug("exporter: " + format, *args)
 
     return ExporterHTTPServer((host, port), Handler)
+
+
+def parse_listen(value: str) -> tuple[str, int]:
+    """Split ``HOST:PORT``; an empty host binds every IPv4 interface."""
+    host, sep, port_text = value.rpartition(":")
+    if not sep:
+        raise ValueError(f"listen address {value!r} is not HOST:PORT")
+    if host.startswith("["):
+        raise ValueError(f"listen address {value!r}: IPv6 is not supported")
+    try:
+        port = int(port_text)
+    except ValueError:
+        raise ValueError(f"listen address {value!r} has a non-numeric port") from None
+    if not 0 <= port <= 65535:
+        raise ValueError(f"listen address {value!r} has an out-of-range port")
+    return host, port
+
+
+@dataclass
+class Watchdog:
+    """Decide, once per interval, whether the exporter should keep serving.
+
+    The optimizer spawns the exporter directly, so ``os.getppid()`` stops
+    matching the moment the optimizer exits (however it exits) and the child is
+    reparented. That avoids the PID-reuse race a bare ``kill(pid, 0)`` has.
+    """
+
+    parent_pid: int | None
+    session_dir: Path
+    grace_s: float
+    getppid: Callable[[], int] = os.getppid
+    read_lock: Callable[[Path], SourceResult] = field(default_factory=lambda: LockFileSource().read)
+    clock: Callable[[], float] = time.monotonic
+    _parent_gone_at: float | None = None
+
+    def parent_alive(self) -> bool | None:
+        """``None`` when running without a parent."""
+        if self.parent_pid is None:
+            return None
+        return self.getppid() == self.parent_pid
+
+    def poll(self) -> str:
+        """Return :data:`RUN`, :data:`GRACE` or :data:`EXIT`."""
+        if self.parent_pid is None:
+            return RUN
+        if self._taken_over():
+            return EXIT
+        if self.parent_alive():
+            return RUN
+        now = self.clock()
+        if self._parent_gone_at is None:
+            self._parent_gone_at = now
+        return EXIT if now - self._parent_gone_at >= self.grace_s else GRACE
+
+    def _taken_over(self) -> bool:
+        # A resumed run took the session lock: free the port for its exporter.
+        result = self.read_lock(self.session_dir)
+        if not result.ok or not isinstance(result.data, dict):
+            return False
+        pid = result.data.get("pid")
+        return pid is not None and pid != self.parent_pid and result.data.get("pid_alive") is True
+
+
+def bind_with_retry(
+    state: ExporterState,
+    host: str,
+    port: int,
+    *,
+    retry_s: float = BIND_RETRY_SEC,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> ExporterHTTPServer | None:
+    """Bind, retrying a busy port for ``retry_s``; ``None`` means give up quietly."""
+    deadline = clock() + retry_s
+    delay = 0.25
+    while True:
+        try:
+            return make_server(state, host, port)
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE or clock() >= deadline:
+                log.warning("exporter: cannot bind %s:%s (%s); not serving metrics", host, port, exc)
+                return None
+        sleep(delay)
+        delay = min(delay * 2, 2.0)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="hyperloom-exporter", description=__doc__.split("\n\n")[0])
+    parser.add_argument("--session-dir", default=None, help="Session directory; auto-discovered when omitted.")
+    parser.add_argument("--model", default=None, help="Narrow session auto-discovery to one model basename.")
+    parser.add_argument("--parent-pid", type=int, default=None, help="Exit a grace period after this process ends.")
+    parser.add_argument("--listen", default=DEFAULT_LISTEN, help=f"HOST:PORT to serve on (default {DEFAULT_LISTEN}).")
+    parser.add_argument(
+        "--grace-sec", type=float, default=DEFAULT_GRACE_SEC, help="Serve this long after the parent exits."
+    )
+    parser.add_argument("--watchdog-interval", type=float, default=WATCHDOG_INTERVAL_SEC, help=argparse.SUPPRESS)
+    parser.add_argument("--bind-retry-sec", type=float, default=BIND_RETRY_SEC, help=argparse.SUPPRESS)
+    parser.add_argument("--gpu", action="store_true", help="Also run the amd-smi probe (off: use the AMD exporter).")
+    parser.add_argument(
+        "--server", action="store_true", help="Also scrape the inference server (off: Prometheus does)."
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the exporter until signalled or its watchdog says to exit."""
+    args = build_parser().parse_args(argv)
+    try:
+        host, port = parse_listen(args.listen)
+    except ValueError as exc:
+        print(f"hyperloom-exporter: {exc}", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    # An explicit dir is used even before it exists: a fresh run spawns the
+    # exporter before state.json is written.
+    session_dir = Path(args.session_dir) if args.session_dir else resolve_session_dir(None, model=args.model)
+    if session_dir is None:
+        print("hyperloom-exporter: no session directory found", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+
+    watchdog = Watchdog(parent_pid=args.parent_pid, session_dir=session_dir, grace_s=args.grace_sec)
+    monitor = SessionMonitor(session_dir, gpu=args.gpu, server=args.server)
+    register_inference_sd(monitor)
+    state = ExporterState(monitor=monitor, version=exporter_version(), parent_alive=watchdog.parent_alive)
+
+    stop = threading.Event()
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, lambda *_: stop.set())
+
+    with monitor:
+        server = bind_with_retry(state, host, port, retry_s=args.bind_retry_sec)
+        if server is None:
+            return EXIT_OK
+        thread = threading.Thread(target=server.serve_forever, name="hyperloom-exporter-http", daemon=True)
+        thread.start()
+        log.info(
+            "exporter: serving http://%s:%s/metrics for %s", host or "0.0.0.0", server.server_address[1], session_dir
+        )
+        try:
+            while not stop.wait(args.watchdog_interval):
+                verdict = watchdog.poll()
+                if verdict == EXIT:
+                    log.info("exporter: parent gone or session taken over; exiting")
+                    break
+        finally:
+            server.shutdown()
+            server.server_close()
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())

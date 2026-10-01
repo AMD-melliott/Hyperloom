@@ -5,12 +5,18 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import os
+import signal
+import socket
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -175,6 +181,221 @@ def test_render_errors_accumulate_across_scrapes(session_dir: Path, monkeypatch)
 
 def test_exporter_version_is_a_string() -> None:
     assert isinstance(exp.exporter_version(), str) and exp.exporter_version()
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def lock_result(pid: int | None, alive: bool | None) -> Callable[[Path], SourceResult]:
+    return lambda _sd: SourceResult.hit({"pid": pid, "pid_alive": alive})
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("127.0.0.1:9477", ("127.0.0.1", 9477)), ("0.0.0.0:0", ("0.0.0.0", 0)), (":9477", ("", 9477))],
+)
+def test_parse_listen_accepts(value: str, expected: tuple[str, int]) -> None:
+    assert exp.parse_listen(value) == expected
+
+
+@pytest.mark.parametrize("value", ["9477", "host:abc", "host:70000", "[::1]:9477", ""])
+def test_parse_listen_rejects(value: str) -> None:
+    with pytest.raises(ValueError):
+        exp.parse_listen(value)
+
+
+def test_watchdog_without_a_parent_runs_forever(tmp_path: Path) -> None:
+    dog = exp.Watchdog(parent_pid=None, session_dir=tmp_path, grace_s=1.0, read_lock=lock_result(None, None))
+    assert dog.parent_alive() is None
+    assert dog.poll() == exp.RUN
+
+
+def test_watchdog_grace_then_exit(tmp_path: Path) -> None:
+    clock = FakeClock()
+    ppid = {"value": 4242}
+    dog = exp.Watchdog(
+        parent_pid=4242,
+        session_dir=tmp_path,
+        grace_s=120.0,
+        getppid=lambda: ppid["value"],
+        read_lock=lock_result(4242, True),
+        clock=clock,
+    )
+    assert dog.poll() == exp.RUN
+    assert dog.parent_alive() is True
+
+    ppid["value"] = 1
+    clock.now = 10.0
+    assert dog.poll() == exp.GRACE
+    assert dog.parent_alive() is False
+    clock.now = 129.0
+    assert dog.poll() == exp.GRACE
+    clock.now = 130.0
+    assert dog.poll() == exp.EXIT
+
+
+def test_watchdog_exits_on_lock_takeover(tmp_path: Path) -> None:
+    dog = exp.Watchdog(
+        parent_pid=4242,
+        session_dir=tmp_path,
+        grace_s=120.0,
+        getppid=lambda: 1,
+        read_lock=lock_result(5555, True),
+        clock=FakeClock(),
+    )
+    assert dog.poll() == exp.EXIT
+
+
+@pytest.mark.parametrize(("pid", "alive"), [(4242, True), (5555, False), (5555, None), (None, None)])
+def test_watchdog_ignores_a_lock_that_is_not_a_live_successor(tmp_path: Path, pid, alive) -> None:
+    dog = exp.Watchdog(
+        parent_pid=4242,
+        session_dir=tmp_path,
+        grace_s=120.0,
+        getppid=lambda: 4242,
+        read_lock=lock_result(pid, alive),
+        clock=FakeClock(),
+    )
+    assert dog.poll() == exp.RUN
+
+
+def _occupy_port() -> tuple[socket.socket, int]:
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    return blocker, blocker.getsockname()[1]
+
+
+def test_bind_gives_up_after_the_retry_window(session_dir: Path) -> None:
+    blocker, port = _occupy_port()
+    clock = FakeClock()
+
+    def sleep(seconds: float) -> None:
+        clock.now += seconds
+
+    try:
+        with monitored(session_dir) as monitor:
+            server = exp.bind_with_retry(
+                exp.ExporterState(monitor=monitor, version="t"),
+                "127.0.0.1",
+                port,
+                retry_s=15.0,
+                sleep=sleep,
+                clock=clock,
+            )
+    finally:
+        blocker.close()
+    assert server is None
+    assert clock.now >= 15.0
+
+
+def test_bind_retries_until_port_frees(session_dir: Path) -> None:
+    blocker, port = _occupy_port()
+    clock = FakeClock()
+
+    def sleep(seconds: float) -> None:
+        clock.now += seconds
+        blocker.close()
+
+    with monitored(session_dir) as monitor:
+        server = exp.bind_with_retry(
+            exp.ExporterState(monitor=monitor, version="t"), "127.0.0.1", port, retry_s=15.0, sleep=sleep, clock=clock
+        )
+    assert server is not None
+    assert server.server_address[1] == port
+    server.server_close()
+
+
+def test_bind_does_not_retry_other_errors(session_dir: Path, monkeypatch) -> None:
+    def refuse(*_args, **_kwargs):
+        raise OSError(errno.EADDRNOTAVAIL, "not here")
+
+    monkeypatch.setattr(exp, "make_server", refuse)
+    slept: list[float] = []
+    with monitored(session_dir) as monitor:
+        server = exp.bind_with_retry(
+            exp.ExporterState(monitor=monitor, version="t"), "10.255.255.1", 9477, sleep=slept.append
+        )
+    assert server is None
+    assert slept == []
+
+
+def test_main_rejects_a_bad_listen_address(session_dir: Path) -> None:
+    assert exp.main(["--session-dir", str(session_dir), "--listen", "nonsense"]) == exp.EXIT_CONFIG_ERROR
+
+
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+PARENT_SCRIPT = """
+import subprocess, sys, time
+child = subprocess.Popen(
+    [sys.executable, "-m", "hyperloom.observability.exporter", "--session-dir", sys.argv[1],
+     "--parent-pid", str(__import__("os").getpid()), "--listen", sys.argv[2],
+     "--grace-sec", "1", "--watchdog-interval", "0.2"],
+    start_new_session=True,
+)
+print(child.pid, flush=True)
+time.sleep(600)
+"""
+
+
+def _pid_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    # A reaped-by-init zombie still answers kill(0); check its state.
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().split()[2] != "Z"
+    except FileNotFoundError:
+        return False
+
+
+def test_exporter_exits_after_parent_is_killed(session_dir: Path) -> None:
+    port = _free_port()
+    parent = subprocess.Popen(
+        [sys.executable, "-c", PARENT_SCRIPT, str(session_dir), f"127.0.0.1:{port}"],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    child_pid = int(parent.stdout.readline())
+    try:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            try:
+                if get(f"http://127.0.0.1:{port}/healthz")[0] == 200:
+                    break
+            except OSError:
+                pass
+            time.sleep(0.1)
+        else:
+            pytest.fail("exporter never started serving")
+
+        status, _, body = get(f"http://127.0.0.1:{port}/metrics")
+        assert status == 200
+        assert "hyperloom_exporter_parent_alive" in body
+
+        parent.send_signal(signal.SIGKILL)
+        parent.wait(10)
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and _pid_running(child_pid):
+            time.sleep(0.2)
+        assert not _pid_running(child_pid), "exporter outlived its grace period"
+    finally:
+        if _pid_running(child_pid):
+            os.kill(child_pid, signal.SIGKILL)
+        if parent.poll() is None:
+            parent.kill()
 
 
 @pytest.fixture(autouse=True)
