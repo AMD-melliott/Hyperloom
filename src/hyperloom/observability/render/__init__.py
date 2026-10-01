@@ -11,14 +11,18 @@ from __future__ import annotations
 
 from .format import Style, detect_style
 from .json_out import SCHEMA_VERSION, render_json, to_dict
+from .prometheus import PROMETHEUS_CONTENT_TYPE, ExporterInfo, render_prometheus
 from .text import render_status
 
 
 __all__ = [
+    "PROMETHEUS_CONTENT_TYPE",
     "SCHEMA_VERSION",
+    "ExporterInfo",
     "Style",
     "detect_style",
     "render_json",
+    "render_prometheus",
     "render_status",
     "to_dict",
 ]
