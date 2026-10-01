@@ -294,6 +294,25 @@ def test_bind_gives_up_after_the_retry_window(session_dir: Path) -> None:
     assert clock.now >= 15.0
 
 
+def test_bind_stops_retrying_when_sleep_reports_a_stop(session_dir: Path) -> None:
+    blocker, port = _occupy_port()
+    slept: list[float] = []
+
+    def stopped(seconds: float) -> bool:
+        slept.append(seconds)
+        return True
+
+    try:
+        with monitored(session_dir) as monitor:
+            server = exp.bind_with_retry(
+                exp.ExporterState(monitor=monitor, version="t"), "127.0.0.1", port, retry_s=15.0, sleep=stopped
+            )
+    finally:
+        blocker.close()
+    assert server is None
+    assert len(slept) == 1
+
+
 def test_bind_retries_until_port_frees(session_dir: Path) -> None:
     blocker, port = _occupy_port()
     clock = FakeClock()
@@ -360,6 +379,18 @@ def _pid_running(pid: int) -> bool:
         return False
 
 
+def _wait_for_healthz(port: int) -> None:
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        try:
+            if get(f"http://127.0.0.1:{port}/healthz")[0] == 200:
+                return
+        except OSError:
+            pass
+        time.sleep(0.1)
+    pytest.fail("exporter never started serving")
+
+
 def test_exporter_exits_after_parent_is_killed(session_dir: Path) -> None:
     port = _free_port()
     parent = subprocess.Popen(
@@ -369,16 +400,7 @@ def test_exporter_exits_after_parent_is_killed(session_dir: Path) -> None:
     )
     child_pid = int(parent.stdout.readline())
     try:
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            try:
-                if get(f"http://127.0.0.1:{port}/healthz")[0] == 200:
-                    break
-            except OSError:
-                pass
-            time.sleep(0.1)
-        else:
-            pytest.fail("exporter never started serving")
+        _wait_for_healthz(port)
 
         status, _, body = get(f"http://127.0.0.1:{port}/metrics")
         assert status == 200
@@ -396,6 +418,28 @@ def test_exporter_exits_after_parent_is_killed(session_dir: Path) -> None:
             os.kill(child_pid, signal.SIGKILL)
         if parent.poll() is None:
             parent.kill()
+
+
+def test_exporter_exits_cleanly_on_sigterm(session_dir: Path) -> None:
+    port = _free_port()
+    exporter = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hyperloom.observability.exporter",
+            "--session-dir",
+            str(session_dir),
+            "--listen",
+            f"127.0.0.1:{port}",
+        ]
+    )
+    try:
+        _wait_for_healthz(port)
+        exporter.send_signal(signal.SIGTERM)
+        assert exporter.wait(5) == 0
+    finally:
+        if exporter.poll() is None:
+            exporter.kill()
 
 
 @pytest.fixture(autouse=True)

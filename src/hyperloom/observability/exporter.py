@@ -231,10 +231,13 @@ def bind_with_retry(
     port: int,
     *,
     retry_s: float = BIND_RETRY_SEC,
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], object] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> ExporterHTTPServer | None:
-    """Bind, retrying a busy port for ``retry_s``; ``None`` means give up quietly."""
+    """Bind, retrying a busy port for ``retry_s``; ``None`` means give up quietly.
+
+    A truthy return from ``sleep`` (``Event.wait`` when stopped) abandons the retry.
+    """
     deadline = clock() + retry_s
     delay = 0.25
     while True:
@@ -244,7 +247,8 @@ def bind_with_retry(
             if exc.errno != errno.EADDRINUSE or clock() >= deadline:
                 log.warning("exporter: cannot bind %s:%s (%s); not serving metrics", host, port, exc)
                 return None
-        sleep(delay)
+        if sleep(delay):
+            return None
         delay = min(delay * 2, 2.0)
 
 
@@ -293,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signum, lambda *_: stop.set())
 
     with monitor:
-        server = bind_with_retry(state, host, port, retry_s=args.bind_retry_sec)
+        server = bind_with_retry(state, host, port, retry_s=args.bind_retry_sec, sleep=stop.wait)
         if server is None:
             return EXIT_OK
         thread = threading.Thread(target=server.serve_forever, name="hyperloom-exporter-http", daemon=True)
