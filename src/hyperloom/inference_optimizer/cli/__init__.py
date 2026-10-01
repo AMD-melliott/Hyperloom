@@ -2434,6 +2434,12 @@ async def _run_optimize(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    # Detached /metrics for this leg; it outlives the run by a grace period and
+    # can never fail it.
+    from .metrics_exporter import start_metrics_exporter
+
+    start_metrics_exporter(session_dir, args)
+
     stop_reason: str | None = None
     try:
         stop_reason = await coordinator.run(

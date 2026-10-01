@@ -482,6 +482,25 @@ def _build_parser() -> argparse.ArgumentParser:
             "min(120, max_hours * 60 * 0.02). Pass 0 to disable closing phase."
         ),
     )
+    opt.add_argument(
+        "--no-metrics-exporter",
+        action="store_true",
+        help="Do not start the Prometheus metrics exporter for this run "
+        "(also HYPERLOOM_METRICS_EXPORTER=0).",
+    )
+    opt.add_argument(
+        "--metrics-listen",
+        default=None,
+        help="HOST:PORT for the metrics exporter (default 127.0.0.1:9477, or "
+        "$HYPERLOOM_METRICS_LISTEN). Use 0.0.0.0:9477 for a remote Prometheus.",
+    )
+    opt.add_argument(
+        "--metrics-grace-sec",
+        type=float,
+        default=None,
+        help="Seconds the exporter keeps serving after the run exits (default 120, "
+        "or $HYPERLOOM_METRICS_GRACE_SEC).",
+    )
     opt.add_argument("--isl", type=int, default=None, help=f"Input sequence length (default {DEFAULT_ISL})")
     opt.add_argument("--osl", type=int, default=None, help=f"Output sequence length (default {DEFAULT_OSL})")
     opt.add_argument(
