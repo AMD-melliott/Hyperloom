@@ -20,7 +20,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from hyperloom.common.env import env_bool
+from hyperloom.common.env import EnvValueError, env_bool
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +44,14 @@ class ExporterLaunch:
 
 def resolve_launch(args: argparse.Namespace, environ: Mapping[str, str]) -> ExporterLaunch | None:
     """Combine flags and env; ``None`` when the exporter is disabled. Flags win."""
-    if getattr(args, "no_metrics_exporter", False) or not env_bool(ENV_ENABLE, True, env=environ):
+    if getattr(args, "no_metrics_exporter", False):
+        return None
+    try:
+        enabled = env_bool(ENV_ENABLE, True, env=environ)
+    except EnvValueError:
+        log.warning("ignoring %s=%r: not a boolean; exporter stays enabled", ENV_ENABLE, environ.get(ENV_ENABLE))
+        enabled = True
+    if not enabled:
         return None
     listen = getattr(args, "metrics_listen", None) or environ.get(ENV_LISTEN, "").strip() or DEFAULT_LISTEN
     grace = getattr(args, "metrics_grace_sec", None)

@@ -57,6 +57,12 @@ def test_a_bad_grace_env_falls_back_to_the_default() -> None:
     assert me.resolve_launch(_parse([]), {"HYPERLOOM_METRICS_GRACE_SEC": "soon"}).grace_sec == 120.0
 
 
+def test_a_malformed_enable_env_keeps_the_exporter_on(caplog) -> None:
+    launch = me.resolve_launch(_parse([]), {"HYPERLOOM_METRICS_EXPORTER": "maybe"})
+    assert launch == me.ExporterLaunch(listen="127.0.0.1:9477", grace_sec=120.0)
+    assert "HYPERLOOM_METRICS_EXPORTER" in caplog.text
+
+
 def test_build_command(tmp_path: Path) -> None:
     command = me.build_command(tmp_path, me.ExporterLaunch("127.0.0.1:9477", 120.0), parent_pid=99, python="/py")
     assert command == [
@@ -108,6 +114,7 @@ def test_a_spawn_failure_never_fails_the_run(tmp_path: Path, caplog) -> None:
 def test_the_run_starts_the_exporter_before_the_coordinator() -> None:
     source = inspect.getsource(cli._run_optimize)
     spawn = source.index("start_metrics_exporter(session_dir, args)")
+    assert source.rindex("_acquire_session_lock_or_exit(session_dir)") < spawn
     assert spawn < source.index("await coordinator.run(")
 
 
