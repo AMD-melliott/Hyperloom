@@ -485,8 +485,7 @@ def _build_parser() -> argparse.ArgumentParser:
     opt.add_argument(
         "--no-metrics-exporter",
         action="store_true",
-        help="Do not start the Prometheus metrics exporter for this run "
-        "(also HYPERLOOM_METRICS_EXPORTER=0).",
+        help="Do not start the Prometheus metrics exporter for this run (also HYPERLOOM_METRICS_EXPORTER=0).",
     )
     opt.add_argument(
         "--metrics-listen",
@@ -498,8 +497,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--metrics-grace-sec",
         type=float,
         default=None,
-        help="Seconds the exporter keeps serving after the run exits (default 120, "
-        "or $HYPERLOOM_METRICS_GRACE_SEC).",
+        help="Seconds the exporter keeps serving after the run exits (default 120, or $HYPERLOOM_METRICS_GRACE_SEC).",
     )
     opt.add_argument("--isl", type=int, default=None, help=f"Input sequence length (default {DEFAULT_ISL})")
     opt.add_argument("--osl", type=int, default=None, help=f"Output sequence length (default {DEFAULT_OSL})")
