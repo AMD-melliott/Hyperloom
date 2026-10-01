@@ -1,0 +1,28 @@
+# prometheus-operator ScrapeConfigs for a Hyperloom host outside the cluster.
+# Replace GPU_HOST_IP with the host's address and match the labels to your
+# Prometheus's scrapeConfigSelector (kube-prometheus-stack: release: <name>).
+# The run must listen beyond loopback: --metrics-listen 0.0.0.0:9477.
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: ScrapeConfig
+metadata:
+  name: hyperloom
+  labels:
+    release: prometheus
+spec:
+  scrapeInterval: 15s
+  staticConfigs:
+    - targets: ["GPU_HOST_IP:9477"]
+      labels:
+        job: hyperloom
+---
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: ScrapeConfig
+metadata:
+  name: hyperloom-inference
+  labels:
+    release: prometheus
+spec:
+  scrapeInterval: 15s
+  httpSDConfigs:
+    - url: http://GPU_HOST_IP:9477/sd/inference
+      refreshInterval: 30s

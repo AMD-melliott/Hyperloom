@@ -1,0 +1,20 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Session state from the exporter every optimizer run starts.
+  - job_name: hyperloom
+    static_configs:
+      - targets: ["127.0.0.1:9477"]
+
+  # The inference server Hyperloom is currently benchmarking; its port changes
+  # between launches, so the exporter advertises it.
+  - job_name: hyperloom-inference
+    http_sd_configs:
+      - url: http://127.0.0.1:9477/sd/inference
+        refresh_interval: 30s
+
+  - job_name: amd-gpu
+    static_configs:
+      - targets: ["127.0.0.1:5000"]

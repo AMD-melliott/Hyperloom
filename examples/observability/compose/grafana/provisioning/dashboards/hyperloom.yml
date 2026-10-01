@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: hyperloom
+    folder: Hyperloom
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards/hyperloom

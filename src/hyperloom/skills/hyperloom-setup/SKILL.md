@@ -136,6 +136,12 @@ value.
    (`HYPERLOOM_DOCKER_TARGET_HOST`). This is where the example skill will run
    `docker run` / `docker exec` later.
 
+   Metrics exporter: every optimizer run serves Prometheus metrics on
+   `127.0.0.1:9477` (disable with `--no-metrics-exporter` or
+   `HYPERLOOM_METRICS_EXPORTER=0`). In Docker mode, reach it from the host by
+   running the container with `--network=host`, or publish `-p 9477:9477` and set
+   `HYPERLOOM_METRICS_LISTEN=0.0.0.0:9477`. See `examples/observability/README.md`.
+
    First inspect the current machine and any Slurm allocation:
 
    ```bash

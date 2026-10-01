@@ -1,0 +1,42 @@
+# Local Prometheus + Grafana + AMD GPU metrics for watching a Hyperloom run.
+# Host networking so Prometheus reaches the exporter on 127.0.0.1:9477 and any
+# loopback-bound inference server it discovers through /sd/inference.
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    network_mode: host
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+      - --web.listen-address=127.0.0.1:9090
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    network_mode: host
+    environment:
+      GF_SERVER_HTTP_PORT: "3000"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../dashboards:/var/lib/grafana/dashboards/hyperloom:ro
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
+  amd-device-metrics-exporter:
+    image: rocm/device-metrics-exporter:v1.5.0
+    network_mode: host
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    volumes:
+      - /sys:/sys:ro  # in-band RAS metrics
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:

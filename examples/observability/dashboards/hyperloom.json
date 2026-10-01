@@ -1,0 +1,135 @@
+{
+  "title": "Hyperloom session",
+  "uid": "hyperloom-session",
+  "schemaVersion": 39,
+  "refresh": "15s",
+  "time": {"from": "now-6h", "to": "now"},
+  "tags": ["hyperloom"],
+  "templating": {
+    "list": [
+      {"name": "datasource", "type": "datasource", "query": "prometheus", "label": "Datasource"},
+      {
+        "name": "session",
+        "label": "Session",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "${datasource}"},
+        "query": {"query": "label_values(hyperloom_session_info, session_id)", "refId": "session"},
+        "definition": "label_values(hyperloom_session_info, session_id)",
+        "refresh": 2,
+        "sort": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Liveness",
+      "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "options": {"textMode": "name", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"refId": "A", "expr": "hyperloom_liveness{session_id=\"$session\"} == 1", "legendFormat": "{{state}}"}]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Current phase",
+      "gridPos": {"x": 4, "y": 0, "w": 5, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "options": {"textMode": "name", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"refId": "A", "expr": "hyperloom_phase_current{session_id=\"$session\"} == 1", "legendFormat": "{{phase}}"}]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Gain over baseline",
+      "gridPos": {"x": 9, "y": 0, "w": 5, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 1}},
+      "targets": [{"refId": "A", "expr": "hyperloom_gain_percent{session_id=\"$session\"}", "legendFormat": "{{kind}}"}]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Session clock",
+      "gridPos": {"x": 14, "y": 0, "w": 6, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "targets": [
+        {"refId": "A", "expr": "hyperloom_session_elapsed_seconds{session_id=\"$session\"}", "legendFormat": "elapsed"},
+        {"refId": "B", "expr": "hyperloom_session_remaining_seconds{session_id=\"$session\"}", "legendFormat": "remaining"}
+      ]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Crashes",
+      "gridPos": {"x": 20, "y": 0, "w": 4, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"refId": "A", "expr": "hyperloom_crashes{session_id=\"$session\"}"}]
+    },
+    {
+      "id": 6, "type": "state-timeline", "title": "Phase timeline",
+      "gridPos": {"x": 0, "y": 4, "w": 24, "h": 5},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "options": {"showValue": "never", "mergeValues": true},
+      "targets": [{"refId": "A", "expr": "hyperloom_phase_current{session_id=\"$session\"}", "legendFormat": "{{phase}}"}]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Throughput (graded unit)",
+      "gridPos": {"x": 0, "y": 9, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {"refId": "A", "expr": "hyperloom_throughput_baseline{session_id=\"$session\"}", "legendFormat": "baseline"},
+        {"refId": "B", "expr": "hyperloom_throughput_best{session_id=\"$session\"}", "legendFormat": "best"}
+      ]
+    },
+    {
+      "id": 8, "type": "bargauge", "title": "Phase budget used",
+      "gridPos": {"x": 12, "y": 9, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
+      "options": {"displayMode": "gradient", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{
+        "refId": "A",
+        "expr": "hyperloom_phase_elapsed_seconds{session_id=\"$session\"} / hyperloom_phase_budget_seconds{session_id=\"$session\"}",
+        "legendFormat": "{{phase}}"
+      }]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Tasks by state",
+      "gridPos": {"x": 0, "y": 17, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"refId": "A", "expr": "hyperloom_tasks{session_id=\"$session\"}", "legendFormat": "{{state}}"}]
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "Lane occupancy",
+      "gridPos": {"x": 12, "y": 17, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {"refId": "A", "expr": "hyperloom_lane_held{session_id=\"$session\"}", "legendFormat": "{{lane}} held"},
+        {"refId": "B", "expr": "hyperloom_lane_capacity{session_id=\"$session\"}", "legendFormat": "{{lane}} capacity"}
+      ]
+    },
+    {
+      "id": 11, "type": "stat", "title": "Current step: time to deadline",
+      "gridPos": {"x": 0, "y": 25, "w": 12, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "targets": [{
+        "refId": "A",
+        "expr": "hyperloom_current_step_deadline_timestamp_seconds{session_id=\"$session\"} - time()",
+        "legendFormat": "deadline"
+      }]
+    },
+    {
+      "id": 12, "type": "table", "title": "Collection health",
+      "gridPos": {"x": 12, "y": 25, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {"refId": "A", "expr": "hyperloom_source_up{session_id=\"$session\"}", "format": "table", "instant": true},
+        {"refId": "B", "expr": "hyperloom_source_age_seconds{session_id=\"$session\"}", "format": "table", "instant": true}
+      ],
+      "transformations": [{"id": "merge"}]
+    },
+    {
+      "id": 13, "type": "timeseries", "title": "Exporter",
+      "gridPos": {"x": 0, "y": 29, "w": 12, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {"refId": "A", "expr": "hyperloom_exporter_parent_alive{session_id=\"$session\"}", "legendFormat": "optimizer alive"},
+        {"refId": "B", "expr": "hyperloom_state_age_seconds{session_id=\"$session\"}", "legendFormat": "state.json age (s)"}
+      ]
+    }
+  ]
+}
