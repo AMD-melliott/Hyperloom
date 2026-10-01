@@ -287,27 +287,43 @@ def _occupy_port() -> tuple[socket.socket, int]:
     return blocker, blocker.getsockname()[1]
 
 
-def test_bind_gives_up_after_the_retry_window(session_dir: Path) -> None:
+def test_bind_without_a_parent_tries_once(session_dir: Path, caplog) -> None:
     blocker, port = _occupy_port()
-    clock = FakeClock()
-
-    def sleep(seconds: float) -> None:
-        clock.now += seconds
-
+    slept: list[float] = []
     try:
         with monitored(session_dir) as monitor:
             server = exp.bind_with_retry(
                 exp.ExporterState(monitor=monitor, version="t"),
                 "127.0.0.1",
                 port,
-                retry_s=15.0,
-                sleep=sleep,
-                clock=clock,
+                keep_waiting=lambda: False,
+                sleep=slept.append,
             )
     finally:
         blocker.close()
     assert server is None
-    assert clock.now >= 15.0
+    assert slept == []
+    assert len([r for r in caplog.records if r.name == exp.log.name]) == 1
+
+
+def test_bind_waits_while_the_parent_runs_and_stops_when_it_says_exit(session_dir: Path, caplog) -> None:
+    blocker, port = _occupy_port()
+    verdicts = iter([True, True, True, False])
+    slept: list[float] = []
+    try:
+        with monitored(session_dir) as monitor:
+            server = exp.bind_with_retry(
+                exp.ExporterState(monitor=monitor, version="t"),
+                "127.0.0.1",
+                port,
+                keep_waiting=lambda: next(verdicts),
+                sleep=slept.append,
+            )
+    finally:
+        blocker.close()
+    assert server is None
+    assert slept == [0.25, 0.5, 1.0]
+    assert caplog.text.count("is busy; waiting") == 1
 
 
 def test_bind_stops_retrying_when_sleep_reports_a_stop(session_dir: Path) -> None:
@@ -321,7 +337,11 @@ def test_bind_stops_retrying_when_sleep_reports_a_stop(session_dir: Path) -> Non
     try:
         with monitored(session_dir) as monitor:
             server = exp.bind_with_retry(
-                exp.ExporterState(monitor=monitor, version="t"), "127.0.0.1", port, retry_s=15.0, sleep=stopped
+                exp.ExporterState(monitor=monitor, version="t"),
+                "127.0.0.1",
+                port,
+                keep_waiting=lambda: True,
+                sleep=stopped,
             )
     finally:
         blocker.close()
@@ -331,15 +351,13 @@ def test_bind_stops_retrying_when_sleep_reports_a_stop(session_dir: Path) -> Non
 
 def test_bind_retries_until_port_frees(session_dir: Path) -> None:
     blocker, port = _occupy_port()
-    clock = FakeClock()
 
-    def sleep(seconds: float) -> None:
-        clock.now += seconds
+    def sleep(_seconds: float) -> None:
         blocker.close()
 
     with monitored(session_dir) as monitor:
         server = exp.bind_with_retry(
-            exp.ExporterState(monitor=monitor, version="t"), "127.0.0.1", port, retry_s=15.0, sleep=sleep, clock=clock
+            exp.ExporterState(monitor=monitor, version="t"), "127.0.0.1", port, keep_waiting=lambda: True, sleep=sleep
         )
     assert server is not None
     assert server.server_address[1] == port
@@ -354,10 +372,37 @@ def test_bind_does_not_retry_other_errors(session_dir: Path, monkeypatch) -> Non
     slept: list[float] = []
     with monitored(session_dir) as monitor:
         server = exp.bind_with_retry(
-            exp.ExporterState(monitor=monitor, version="t"), "10.255.255.1", 9477, sleep=slept.append
+            exp.ExporterState(monitor=monitor, version="t"),
+            "10.255.255.1",
+            9477,
+            keep_waiting=lambda: True,
+            sleep=slept.append,
         )
     assert server is None
     assert slept == []
+
+
+def test_a_busy_port_without_a_parent_exits_zero(session_dir: Path) -> None:
+    blocker, port = _occupy_port()
+    try:
+        exporter = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "hyperloom.observability.exporter",
+                "--session-dir",
+                str(session_dir),
+                "--listen",
+                f"127.0.0.1:{port}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    finally:
+        blocker.close()
+    assert exporter.returncode == 0
+    assert "not serving metrics" in exporter.stderr
 
 
 @pytest.mark.parametrize(("flag", "value"), [("--listen", "nonsense"), ("--grace-sec", "nan")])

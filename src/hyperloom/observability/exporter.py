@@ -47,7 +47,6 @@ log = logging.getLogger(__name__)
 SD_SOURCE = "inference_sd"
 SD_INTERVAL_SEC = 15.0
 WATCHDOG_INTERVAL_SEC = 2.0
-BIND_RETRY_SEC = 15.0
 
 # Mirrors ``inference_optimizer/tools/status.py``: the exit code reports whether
 # the command ran, so an exporter that could not bind still exits 0.
@@ -207,23 +206,25 @@ def bind_with_retry(
     host: str,
     port: int,
     *,
-    retry_s: float = BIND_RETRY_SEC,
+    keep_waiting: Callable[[], bool],
     sleep: Callable[[float], object] = time.sleep,
-    clock: Callable[[], float] = time.monotonic,
 ) -> ExporterHTTPServer | None:
-    """Bind, retrying a busy port for ``retry_s``; ``None`` means give up quietly.
+    """Bind, retrying a busy port while ``keep_waiting()`` holds; ``None`` means give up quietly.
 
     A truthy return from ``sleep`` (``Event.wait`` when stopped) abandons the retry.
     """
-    deadline = clock() + retry_s
     delay = 0.25
+    announced = False
     while True:
         try:
             return make_server(state, host, port)
         except OSError as exc:
-            if exc.errno != errno.EADDRINUSE or clock() >= deadline:
+            if exc.errno != errno.EADDRINUSE or not keep_waiting():
                 log.warning("exporter: cannot bind %s:%s (%s); not serving metrics", host, port, exc)
                 return None
+            if not announced:
+                log.warning("exporter: %s:%s is busy; waiting for it while the parent runs", host, port)
+                announced = True
         if sleep(delay):
             return None
         delay = min(delay * 2, 2.0)
@@ -244,7 +245,6 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Serve this long after the parent exits (default {DEFAULT_GRACE_SEC:g}).",
     )
     parser.add_argument("--watchdog-interval", type=float, default=WATCHDOG_INTERVAL_SEC, help=argparse.SUPPRESS)
-    parser.add_argument("--bind-retry-sec", type=float, default=BIND_RETRY_SEC, help=argparse.SUPPRESS)
     parser.add_argument("--gpu", action="store_true", help="Also run the amd-smi probe (off: use the AMD exporter).")
     parser.add_argument(
         "--server", action="store_true", help="Also scrape the inference server (off: Prometheus does)."
@@ -275,7 +275,15 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signum, lambda *_: stop.set())
 
     with monitor:
-        server = bind_with_retry(state, host, port, retry_s=args.bind_retry_sec, sleep=stop.wait)
+        # A predecessor in its grace period frees the port when the grace ends,
+        # so a spawned exporter waits as long as its own run lasts.
+        server = bind_with_retry(
+            state,
+            host,
+            port,
+            keep_waiting=lambda: args.parent_pid is not None and watchdog.poll() != EXIT,
+            sleep=stop.wait,
+        )
         if server is None:
             return EXIT_OK
         thread = threading.Thread(target=server.serve_forever, name="hyperloom-exporter-http", daemon=True)
