@@ -58,10 +58,14 @@ workload shape. Allow port 9477 only from your Prometheus nodes.
 
 ## Hyperloom in Docker
 
-Run the ROCm container with `--network=host` (the usual setup), or publish
-`-p 9477:9477` and set `HYPERLOOM_METRICS_LISTEN=0.0.0.0:9477` inside it. If
-the container exits, the grace period is lost; everything up to that point is
-already in Prometheus.
+The shipped run skills start the ROCm container without host networking or a
+published port, so the exporter is reachable only inside the container. To
+scrape it from the host, add `--network=host` to that `docker run`, or publish
+`-p 127.0.0.1:9477:9477` and set `HYPERLOOM_METRICS_LISTEN=0.0.0.0:9477` in
+the container. Only host networking also makes `/sd/inference` useful, since
+the benchmark server binds the container's loopback. If the container exits,
+the grace period is lost; everything up to that point is already in
+Prometheus.
 
 ## What is not here
 

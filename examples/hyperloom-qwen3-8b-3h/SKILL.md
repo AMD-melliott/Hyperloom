@@ -72,6 +72,13 @@ docker run -d \
   -f /dev/null
 ```
 
+Metrics: each optimize run serves Prometheus metrics on `127.0.0.1:9477` inside
+the container, which this command does not expose. To scrape it from the host,
+add `--network=host`, or add `-p 127.0.0.1:9477:9477 -e HYPERLOOM_METRICS_LISTEN=0.0.0.0:9477`.
+Only host networking also makes `/sd/inference` useful, because the benchmark
+server binds the container's loopback. See
+https://github.com/AMD-AGI/Hyperloom/blob/main/examples/observability/README.md.
+
 Mount the Hyperloom workspace at the same absolute path (`-v "$REPO_ROOT:$REPO_ROOT"`) so paths in `.env`, logs, and session artifacts stay valid. If `USER_DATA_PATH` or a pre-downloaded model directory is outside the workspace, add matching `-v host_path:host_path` mounts before starting the container.
 
 Then run the setup backend inside the container:
