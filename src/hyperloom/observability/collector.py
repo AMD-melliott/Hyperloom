@@ -414,7 +414,7 @@ class SessionMonitor:
             self.collector.register(self.GPU, lambda: gpu_source.read())
         if server:
             server_source = ServerMetricsSource(base_url=server_url)
-            self.collector.register(self.SERVER, lambda: server_source.read(now_unix=self._clock()))
+            self.collector.register(self.SERVER, lambda: server_source.read(self.session_dir, now_unix=self._clock()))
 
     def _read_session(self) -> SourceResult:
         """Read the session artifacts into a snapshot."""

@@ -40,7 +40,7 @@ from .exporter_config import DEFAULT_GRACE_SEC, DEFAULT_LISTEN, parse_grace_sec,
 from .render.prometheus import PROMETHEUS_CONTENT_TYPE, ExporterInfo, render_prometheus, session_labels
 from .sources.base import SourceResult
 from .sources.lockfile import LockFileSource
-from .sources.server import discover_base_url
+from .sources.server import find_session_server
 
 log = logging.getLogger(__name__)
 
@@ -58,15 +58,15 @@ GRACE = "grace"
 EXIT = "exit"
 
 
-def _read_inference_target() -> SourceResult:
+def _read_inference_target(session_dir: Path) -> SourceResult:
     # Always a hit, even with no server: an ABSENT result would keep the
     # previous URL cached and keep advertising a server that has gone away.
-    return SourceResult.hit({"url": discover_base_url()})
+    return SourceResult.hit({"url": find_session_server(session_dir)})
 
 
 def register_inference_sd(monitor: SessionMonitor, *, interval_s: float = SD_INTERVAL_SEC) -> None:
-    """Poll for the inference server on the monitor's collector."""
-    monitor.collector.register(SD_SOURCE, _read_inference_target, interval_s=interval_s)
+    """Poll for this session's inference server on the monitor's collector."""
+    monitor.collector.register(SD_SOURCE, lambda: _read_inference_target(monitor.session_dir), interval_s=interval_s)
 
 
 class ExporterState:

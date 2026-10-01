@@ -287,20 +287,16 @@ def test_beacon_source_never_creates_the_beacon(tmp_path: Path, frozen_clock) ->
     assert not (sd / "runtime").exists()
 
 
-def test_gpu_and_server_sources_ignore_the_session_directory(tmp_path: Path, monkeypatch) -> None:
-    """Host-scoped probes must not read or write inside a session.
-
-    They accept ``session_dir`` only for protocol symmetry; taking a dependency
-    on it would make a host metric look session-attributable, which the model
-    explicitly denies.
-    """
+def test_gpu_and_server_sources_never_write_the_session_directory(tmp_path: Path, monkeypatch) -> None:
+    """The server source reads the session's lifecycle pid files; neither probe writes there."""
     from hyperloom.observability.sources import GpuSource, ServerMetricsSource
 
     sd = tmp_path / "session"
     sd.mkdir()
     before = _tree_fingerprint(sd)
 
-    monkeypatch.setattr("hyperloom.observability.sources.server.discover_base_url", lambda: None)
+    monkeypatch.setattr("hyperloom.observability.sources.server._listening_ports", lambda: ())
+    monkeypatch.delenv("HYPERLOOM_VLLM_URL", raising=False)
     GpuSource().read(sd)
     ServerMetricsSource().read(sd)
 

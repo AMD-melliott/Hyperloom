@@ -231,7 +231,7 @@ def _render_once(args: argparse.Namespace) -> tuple[int, str]:
         from hyperloom.observability.sources import ServerMetricsSource
 
         source = ServerMetricsSource(base_url=args.vllm_url)
-        result = source.read()
+        result = source.read(session_dir)
         extra_reads.append((source.name, result))
         if result.ok:
             extras["server"] = result.data

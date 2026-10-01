@@ -12,7 +12,10 @@ hand-written fixture would omit exactly the shapes that break parsers.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -23,8 +26,11 @@ from hyperloom.observability.sources.gpu import (
     parse_rocm_smi_csv,
     resolve_amd_smi,
 )
+from hyperloom.observability.sources import server
 from hyperloom.observability.sources.server import (
     ServerMetricsSource,
+    discover_base_url,
+    find_session_server,
     parse_prometheus,
 )
 
@@ -254,7 +260,7 @@ def test_counter_reset_yields_none_not_a_negative_rate(monkeypatch) -> None:
 
 def test_no_server_listening_is_absent_not_error(monkeypatch) -> None:
     """No server during a KERNEL_AGENT phase is normal, not a fault."""
-    monkeypatch.setattr("hyperloom.observability.sources.server.discover_base_url", lambda: None)
+    monkeypatch.setattr("hyperloom.observability.sources.server.discover_base_url", lambda _sd=None: None)
 
     assert ServerMetricsSource().read().outcome is SourceOutcome.ABSENT
 
@@ -292,10 +298,73 @@ def test_kv_cache_ratio_is_normalised_to_percent(monkeypatch) -> None:
 
 def test_env_override_wins_over_discovery(monkeypatch) -> None:
     """``$HYPERLOOM_VLLM_URL`` short-circuits socket scanning."""
-    from hyperloom.observability.sources.server import discover_base_url
-
     monkeypatch.setenv("HYPERLOOM_VLLM_URL", "http://gpu-node:8123/")
     assert discover_base_url() == "http://gpu-node:8123"
+
+
+def _dead_pid() -> int:
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    return child.pid
+
+
+def _lifecycle_server(
+    session_dir: Path, pid: int, *, port: int, meta: dict | None = None, mtime: float | None = None
+) -> Path:
+    pid_dir = session_dir / "runs" / "baseline" / "abc123"
+    pid_dir.mkdir(parents=True, exist_ok=True)
+    pid_file = pid_dir / f"vllm_{port}.pid"
+    pid_file.write_text(f"{pid} {pid}\n", encoding="utf-8")
+    if meta is not None:
+        pid_file.with_suffix(".json").write_text(json.dumps(meta), encoding="utf-8")
+    if mtime is not None:
+        os.utime(pid_file, (mtime, mtime))
+    return pid_file
+
+
+@pytest.fixture
+def no_server_env(monkeypatch):
+    monkeypatch.delenv("HYPERLOOM_VLLM_URL", raising=False)
+
+
+def test_session_server_is_the_live_lifecycle_server(tmp_path: Path, no_server_env) -> None:
+    _lifecycle_server(tmp_path, os.getpid(), port=43210)
+    assert find_session_server(tmp_path) == "http://127.0.0.1:43210"
+
+
+def test_session_server_ignores_a_dead_pid_and_other_pid_files(tmp_path: Path, no_server_env) -> None:
+    _lifecycle_server(tmp_path, _dead_pid(), port=43210)
+    (tmp_path / "runs" / "magpie_server.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+    assert find_session_server(tmp_path) is None
+
+
+def test_session_server_uses_the_host_its_meta_records(tmp_path: Path, no_server_env) -> None:
+    _lifecycle_server(tmp_path, os.getpid(), port=43210, meta={"base_url": "http://10.0.0.5:43210/"})
+    assert find_session_server(tmp_path) == "http://10.0.0.5:43210"
+
+
+def test_the_most_recent_live_server_wins(tmp_path: Path, no_server_env) -> None:
+    _lifecycle_server(tmp_path, os.getpid(), port=40001, mtime=1000.0)
+    _lifecycle_server(tmp_path, os.getpid(), port=40002, mtime=2000.0)
+    assert find_session_server(tmp_path) == "http://127.0.0.1:40002"
+
+
+def test_env_override_wins_over_the_session_server(tmp_path: Path, monkeypatch) -> None:
+    _lifecycle_server(tmp_path, os.getpid(), port=43210)
+    monkeypatch.setenv("HYPERLOOM_VLLM_URL", "http://gpu-node:8123/")
+    assert find_session_server(tmp_path) == "http://gpu-node:8123"
+
+
+def test_session_lookup_never_advertises_a_host_wide_port(tmp_path: Path, monkeypatch, no_server_env) -> None:
+    monkeypatch.setattr(server, "_listening_ports", lambda: (8000, 8080))
+    assert find_session_server(tmp_path) is None
+    assert discover_base_url(tmp_path) == "http://127.0.0.1:8000"
+
+
+def test_discovery_prefers_the_session_server_over_default_ports(tmp_path: Path, monkeypatch, no_server_env) -> None:
+    monkeypatch.setattr(server, "_listening_ports", lambda: (8000,))
+    _lifecycle_server(tmp_path, os.getpid(), port=43210)
+    assert discover_base_url(tmp_path) == "http://127.0.0.1:43210"
 
 
 def test_json_roundtrip_of_the_gpu_fixture() -> None:

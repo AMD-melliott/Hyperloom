@@ -3,12 +3,12 @@
 
 """Live counters from the inference server's Prometheus ``/metrics`` endpoint.
 
-Finding the endpoint is most of the work. Nothing in a session directory
-records it: ``state.json``, ``manifest.json`` and ``runtime/`` were all checked
-on a real run and none carries a port, and the generated ``current_setting.sh``
-invokes a bare ``vllm serve`` with no ``--port``, leaving the framework default.
-So discovery walks a ladder from explicit configuration down to inspecting the
-host's listening sockets, and gives up quietly rather than guessing loudly.
+Finding the endpoint is most of the work. The persistent benchmark server
+takes a fresh port on every launch, and the only record of it is the
+lifecycle pid file the optimizer keeps under ``runs/`` while the server runs.
+So discovery walks a ladder from explicit configuration, through this
+session's live lifecycle server, down to the host's framework-default ports,
+and gives up quietly rather than guessing loudly.
 
 An absent server is ``ABSENT``, never ``ERROR``. There is no server at all
 during a KERNEL_AGENT phase — the framework is torn down while kernels are
@@ -26,6 +26,7 @@ declares no third-party dependencies.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -35,6 +36,7 @@ from pathlib import Path
 
 from ..model import ServerMetrics
 from .base import SourceResult
+from .lockfile import pid_alive
 
 
 ENV_SERVER_URL = "HYPERLOOM_VLLM_URL"
@@ -45,6 +47,11 @@ DEFAULT_TIMEOUT_S = 3.0
 # Ports worth probing when socket discovery finds nothing. vLLM defaults to
 # 8000; 8080 is the common override in this repo's launch scripts.
 FALLBACK_PORTS: tuple[int, ...] = (8000, 8080)
+
+# ``runs/**/{framework}_{port}.pid`` holding ``PID [PGID]``, beside a ``.json``
+# meta; written by the orchestrator's server-lifecycle protocol and removed on
+# teardown.
+_LIFECYCLE_PID_FILE = re.compile(r"^.+_(?P<port>\d+)\.pid$")
 
 # ``metric_name{labels} value`` — labels are ignored because a single-model
 # server emits one series per metric and summing across labels would be wrong
@@ -130,19 +137,71 @@ def _listening_ports() -> tuple[int, ...]:
     return tuple(sorted(set(ports)))
 
 
-def discover_base_url() -> str | None:
+def _configured_url() -> str | None:
+    configured = os.environ.get(ENV_SERVER_URL, "").strip()
+    return configured.rstrip("/") or None
+
+
+def _meta_base_url(meta_file: Path, port: str) -> str | None:
+    try:
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(meta, dict):
+        return None
+    if isinstance(meta.get("base_url"), str) and meta["base_url"]:
+        return meta["base_url"].rstrip("/")
+    if isinstance(meta.get("host"), str) and meta["host"]:
+        return f"http://{meta['host']}:{port}"
+    return None
+
+
+def find_session_server(session_dir: Path) -> str | None:
+    """Resolve the inference server this session is benchmarking right now.
+
+    ``$HYPERLOOM_VLLM_URL`` wins; otherwise the most recently started lifecycle
+    server under ``runs/`` whose pid is alive, at the host its meta records or
+    ``127.0.0.1``. Never probes host-wide ports, so another session's or an
+    unrelated service is not mistaken for this one.
+
+    Returns:
+        A base URL, or ``None`` when this session has no live server.
+    """
+    configured = _configured_url()
+    if configured:
+        return configured
+    newest: tuple[float, str] | None = None
+    for pid_file in (Path(session_dir) / "runs").rglob("*.pid"):
+        match = _LIFECYCLE_PID_FILE.match(pid_file.name)
+        if match is None:
+            continue
+        try:
+            fields = pid_file.read_text(encoding="utf-8").split()
+            started = pid_file.stat().st_mtime
+        except OSError:
+            continue
+        if not fields or not pid_alive(fields[0]):
+            continue
+        port = match.group("port")
+        url = _meta_base_url(pid_file.with_suffix(".json"), port) or f"http://127.0.0.1:{port}"
+        if newest is None or started > newest[0]:
+            newest = (started, url)
+    return newest[1] if newest else None
+
+
+def discover_base_url(session_dir: Path | None = None) -> str | None:
     """Resolve the inference server's base URL.
 
-    Order: ``$HYPERLOOM_VLLM_URL``, then a listening port that matches one of
-    the known framework defaults, then nothing.
+    Order: :func:`find_session_server` when a session is given (else just
+    ``$HYPERLOOM_VLLM_URL``), then a listening port that matches one of the
+    known framework defaults, then nothing.
 
     Returns:
         A base URL, or ``None`` when no plausible server is listening.
     """
-    configured = os.environ.get(ENV_SERVER_URL, "").strip()
-    if configured:
-        return configured.rstrip("/")
-
+    found = find_session_server(session_dir) if session_dir is not None else _configured_url()
+    if found:
+        return found
     listening = set(_listening_ports())
     for port in FALLBACK_PORTS:
         if port in listening:
@@ -183,7 +242,8 @@ class ServerMetricsSource:
         """Scrape the server's metrics endpoint.
 
         Args:
-            session_dir: Unused; accepted for protocol symmetry.
+            session_dir: Session whose lifecycle server to prefer when no
+                base URL was given.
             now_unix: Observation time, used to derive the token rate.
 
         Returns:
@@ -191,10 +251,9 @@ class ServerMetricsSource:
             ``ABSENT`` when nothing is listening, or ``ERROR`` when a server
             answered but its response was unusable.
         """
-        del session_dir
         now = float(now_unix if now_unix is not None else time.time())
 
-        base = self._base_url or discover_base_url()
+        base = self._base_url or discover_base_url(session_dir)
         if not base:
             self._previous = None
             return SourceResult.absent()

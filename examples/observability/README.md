@@ -44,11 +44,14 @@ docker compose up -d
    kubectl -n monitoring label configmap hyperloom-dashboard grafana_dashboard=1
    ```
 
-`/sd/inference` reports the inference server's address as discovered and does
-not rewrite it, which is usually `127.0.0.1:<port>`. A Prometheus on another
-host would scrape its own loopback, so for a remote Prometheus start the
-inference server on a reachable interface and set `HYPERLOOM_VLLM_URL` to that
-address.
+`/sd/inference` advertises the session's live benchmark server at the address
+it binds, usually `127.0.0.1:<port>`, and returns `[]` while none is running.
+The port changes with every server launch. Inference-server scraping therefore
+works with a Prometheus on the same host (the Compose stack, or host
+networking). A remote or Kubernetes Prometheus still gets the exporter's
+`/metrics`, but cannot reach a loopback-bound server. `HYPERLOOM_VLLM_URL`
+overrides discovery only for a fixed server you started on a reachable
+address yourself.
 
 The endpoint has no authentication and reveals the model, framework and
 workload shape. Allow port 9477 only from your Prometheus nodes.

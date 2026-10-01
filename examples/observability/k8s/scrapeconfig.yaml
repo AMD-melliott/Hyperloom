@@ -2,7 +2,9 @@
 # Replace GPU_HOST_IP with the host's address and match the labels to your
 # Prometheus's scrapeConfigSelector (kube-prometheus-stack: release: <name>).
 # The run must listen beyond loopback: --metrics-listen 0.0.0.0:9477.
-# The inference server must be reachable too: see README.md (HYPERLOOM_VLLM_URL).
+# hyperloom-inference only finds targets this Prometheus can reach when the
+# benchmark server binds beyond loopback; it usually binds 127.0.0.1 on a port
+# that changes per launch. See README.md.
 apiVersion: monitoring.coreos.com/v1alpha1
 kind: ScrapeConfig
 metadata:

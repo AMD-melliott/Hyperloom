@@ -62,7 +62,7 @@ def get(url: str) -> tuple[int, str, str]:
 
 
 def test_metrics_endpoint_serves_the_session(session_dir: Path, monkeypatch) -> None:
-    monkeypatch.setattr(exp, "discover_base_url", lambda: None)
+    monkeypatch.setattr(exp, "find_session_server", lambda _sd: None)
     with monitored(session_dir) as monitor, serving(exp.ExporterState(monitor=monitor, version="t")) as base:
         status, ctype, body = get(f"{base}/metrics")
     assert status == 200
@@ -76,14 +76,14 @@ def test_metrics_endpoint_serves_the_session(session_dir: Path, monkeypatch) -> 
 
 
 def test_healthz_and_unknown_path(session_dir: Path, monkeypatch) -> None:
-    monkeypatch.setattr(exp, "discover_base_url", lambda: None)
+    monkeypatch.setattr(exp, "find_session_server", lambda _sd: None)
     with monitored(session_dir) as monitor, serving(exp.ExporterState(monitor=monitor, version="t")) as base:
         assert get(f"{base}/healthz")[0] == 200
         assert get(f"{base}/nope")[0] == 404
 
 
 def test_inference_sd_advertises_the_discovered_server(session_dir: Path, monkeypatch) -> None:
-    monkeypatch.setattr(exp, "discover_base_url", lambda: "http://127.0.0.1:8000")
+    monkeypatch.setattr(exp, "find_session_server", lambda _sd: "http://127.0.0.1:8000")
     with monitored(session_dir) as monitor, serving(exp.ExporterState(monitor=monitor, version="t")) as base:
         status, ctype, body = get(f"{base}/sd/inference")
     assert status == 200
@@ -101,13 +101,35 @@ def test_inference_sd_advertises_the_discovered_server(session_dir: Path, monkey
 
 
 def test_inference_sd_is_empty_without_a_server(session_dir: Path, monkeypatch) -> None:
-    monkeypatch.setattr(exp, "discover_base_url", lambda: None)
+    monkeypatch.setattr(exp, "find_session_server", lambda _sd: None)
+    with monitored(session_dir) as monitor, serving(exp.ExporterState(monitor=monitor, version="t")) as base:
+        assert json.loads(get(f"{base}/sd/inference")[2]) == []
+
+
+def _write_lifecycle_pid(session_dir: Path, pid: int, port: int) -> None:
+    pid_dir = session_dir / "runs" / "baseline" / "abc123"
+    pid_dir.mkdir(parents=True)
+    (pid_dir / f"sglang_{port}.pid").write_text(f"{pid} {pid}\n", encoding="utf-8")
+
+
+def test_inference_sd_advertises_the_sessions_live_server(session_dir: Path, monkeypatch) -> None:
+    monkeypatch.setattr("hyperloom.observability.sources.server._listening_ports", lambda: (8000, 8080))
+    _write_lifecycle_pid(session_dir, os.getpid(), 43210)
+    with monitored(session_dir) as monitor, serving(exp.ExporterState(monitor=monitor, version="t")) as base:
+        assert json.loads(get(f"{base}/sd/inference")[2])[0]["targets"] == ["127.0.0.1:43210"]
+
+
+def test_inference_sd_is_empty_once_the_sessions_server_is_gone(session_dir: Path, monkeypatch) -> None:
+    monkeypatch.setattr("hyperloom.observability.sources.server._listening_ports", lambda: (8000, 8080))
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    _write_lifecycle_pid(session_dir, dead.pid, 43210)
     with monitored(session_dir) as monitor, serving(exp.ExporterState(monitor=monitor, version="t")) as base:
         assert json.loads(get(f"{base}/sd/inference")[2]) == []
 
 
 def test_metrics_before_session_exists(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(exp, "discover_base_url", lambda: None)
+    monkeypatch.setattr(exp, "find_session_server", lambda _sd: None)
     missing = tmp_path / "model" / "20260930T000000Z"
     with monitored(missing) as monitor, serving(exp.ExporterState(monitor=monitor, version="t")) as base:
         status, _, body = get(f"{base}/metrics")
@@ -117,7 +139,7 @@ def test_metrics_before_session_exists(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_metrics_answer_while_a_source_hangs(session_dir: Path, monkeypatch) -> None:
-    monkeypatch.setattr(exp, "discover_base_url", lambda: None)
+    monkeypatch.setattr(exp, "find_session_server", lambda _sd: None)
     release = threading.Event()
     calls = {"n": 0}
 
@@ -143,7 +165,7 @@ def test_metrics_answer_while_a_source_hangs(session_dir: Path, monkeypatch) -> 
 
 
 def test_a_failing_render_returns_500_and_the_server_survives(session_dir: Path, monkeypatch) -> None:
-    monkeypatch.setattr(exp, "discover_base_url", lambda: None)
+    monkeypatch.setattr(exp, "find_session_server", lambda _sd: None)
     with monitored(session_dir) as monitor:
         state = exp.ExporterState(monitor=monitor, version="t")
         original = state.metrics_text
@@ -155,7 +177,7 @@ def test_a_failing_render_returns_500_and_the_server_survives(session_dir: Path,
 
 
 def test_serving_never_writes_the_session(session_dir: Path, monkeypatch) -> None:
-    monkeypatch.setattr(exp, "discover_base_url", lambda: "http://127.0.0.1:8000")
+    monkeypatch.setattr(exp, "find_session_server", lambda _sd: "http://127.0.0.1:8000")
     before = _tree_fingerprint(session_dir)
     with monitored(session_dir) as monitor, serving(exp.ExporterState(monitor=monitor, version="t")) as base:
         for path in ("/metrics", "/sd/inference", "/healthz"):
@@ -170,7 +192,7 @@ def test_render_errors_accumulate_across_scrapes(session_dir: Path, monkeypatch)
         raise RuntimeError("x")
 
     monkeypatch.setattr(prom, "_SNAPSHOT_BUILDERS", (("session", boom),))
-    monkeypatch.setattr(exp, "discover_base_url", lambda: None)
+    monkeypatch.setattr(exp, "find_session_server", lambda _sd: None)
     with monitored(session_dir) as monitor:
         state = exp.ExporterState(monitor=monitor, version="t")
         state.metrics_text()
