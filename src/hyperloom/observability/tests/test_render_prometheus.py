@@ -231,6 +231,19 @@ def test_values_follow_the_snapshot(snapshot) -> None:
     assert value_of(samples, "hyperloom_exporter_build_info", version="9.9.9") == 1
 
 
+def test_an_expired_lease_renders_zero(snapshot) -> None:
+    lease = dataclasses.replace(snapshot.gpu_leases[0], expired=True)
+    _, samples = parse_exposition(
+        render_prometheus(dataclasses.replace(snapshot, gpu_leases=(lease,)), exporter=EXPORTER)
+    )
+    assert value_of(samples, "hyperloom_gpu_leased", gpu_id=str(lease.gpu_id)) == 0
+
+
+def test_stop_info_carries_the_reason(full_snapshot) -> None:
+    _, samples = parse_exposition(render_prometheus(full_snapshot, exporter=EXPORTER))
+    assert value_of(samples, "hyperloom_stop_info", reason="time_exhausted") == 1
+
+
 def test_none_is_omitted_not_zeroed(snapshot) -> None:
     _, samples = parse_exposition(render_prometheus(snapshot, exporter=ExporterInfo(version="1")))
     budget_phases = {lab["phase"] for n, lab, _ in samples if n == "hyperloom_phase_budget_seconds"}

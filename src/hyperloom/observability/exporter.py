@@ -138,6 +138,8 @@ def make_server(state: ExporterState, host: str, port: int) -> ExporterHTTPServe
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "hyperloom-exporter"
+        # A stalled client must not hold a handler thread forever.
+        timeout = 10
 
         def do_GET(self) -> None:
             path = self.path.split("?", 1)[0]

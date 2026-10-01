@@ -241,7 +241,9 @@ def _exporter_families(snapshot: Snapshot | None, exporter: ExporterInfo, *, err
         parent.add(1 if exporter.parent_alive else 0)
     observed = _gauge("hyperloom_session_observed", "1 once the session has been read successfully.")
     observed.add(0 if snapshot is None else 1)
-    errors = MetricFamily("hyperloom_exporter_render_errors_total", "counter", "Metric families that failed to render.")
+    errors = MetricFamily(
+        "hyperloom_exporter_render_errors_total", "counter", "Metric sections that failed to render, across scrapes."
+    )
     errors.add(errors_total)
     return [build, parent, observed, errors]
 
