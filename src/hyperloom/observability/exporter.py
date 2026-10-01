@@ -36,6 +36,7 @@ from hyperloom.common.version import hyperloom_version
 
 from .assemble import resolve_session_dir
 from .collector import SessionMonitor
+from .exporter_config import DEFAULT_GRACE_SEC, DEFAULT_LISTEN, parse_grace_sec, parse_listen
 from .render.prometheus import PROMETHEUS_CONTENT_TYPE, ExporterInfo, render_prometheus, session_labels
 from .sources.base import SourceResult
 from .sources.lockfile import LockFileSource
@@ -45,8 +46,6 @@ log = logging.getLogger(__name__)
 
 SD_SOURCE = "inference_sd"
 SD_INTERVAL_SEC = 15.0
-DEFAULT_LISTEN = "127.0.0.1:9477"
-DEFAULT_GRACE_SEC = 120.0
 WATCHDOG_INTERVAL_SEC = 2.0
 BIND_RETRY_SEC = 15.0
 
@@ -158,22 +157,6 @@ def make_server(state: ExporterState, host: str, port: int) -> ExporterHTTPServe
     return ExporterHTTPServer((host, port), Handler)
 
 
-def parse_listen(value: str) -> tuple[str, int]:
-    """Split ``HOST:PORT``; an empty host binds every IPv4 interface."""
-    host, sep, port_text = value.rpartition(":")
-    if not sep:
-        raise ValueError(f"listen address {value!r} is not HOST:PORT")
-    if host.startswith("["):
-        raise ValueError(f"listen address {value!r}: IPv6 is not supported")
-    try:
-        port = int(port_text)
-    except ValueError:
-        raise ValueError(f"listen address {value!r} has a non-numeric port") from None
-    if not 0 <= port <= 65535:
-        raise ValueError(f"listen address {value!r} has an out-of-range port")
-    return host, port
-
-
 @dataclass
 class Watchdog:
     """Decide, once per interval, whether the exporter should keep serving.
@@ -251,9 +234,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--session-dir", default=None, help="Session directory; auto-discovered when omitted.")
     parser.add_argument("--model", default=None, help="Narrow session auto-discovery to one model basename.")
     parser.add_argument("--parent-pid", type=int, default=None, help="Exit a grace period after this process ends.")
-    parser.add_argument("--listen", default=DEFAULT_LISTEN, help=f"HOST:PORT to serve on (default {DEFAULT_LISTEN}).")
     parser.add_argument(
-        "--grace-sec", type=float, default=DEFAULT_GRACE_SEC, help="Serve this long after the parent exits."
+        "--listen", type=parse_listen, default=DEFAULT_LISTEN, help=f"HOST:PORT to serve on (default {DEFAULT_LISTEN})."
+    )
+    parser.add_argument(
+        "--grace-sec",
+        type=parse_grace_sec,
+        default=DEFAULT_GRACE_SEC,
+        help=f"Serve this long after the parent exits (default {DEFAULT_GRACE_SEC:g}).",
     )
     parser.add_argument("--watchdog-interval", type=float, default=WATCHDOG_INTERVAL_SEC, help=argparse.SUPPRESS)
     parser.add_argument("--bind-retry-sec", type=float, default=BIND_RETRY_SEC, help=argparse.SUPPRESS)
@@ -267,11 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Run the exporter until signalled or its watchdog says to exit."""
     args = build_parser().parse_args(argv)
-    try:
-        host, port = parse_listen(args.listen)
-    except ValueError as exc:
-        print(f"hyperloom-exporter: {exc}", file=sys.stderr)
-        return EXIT_CONFIG_ERROR
+    host, port = args.listen
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     # An explicit dir is used even before it exists: a fresh run spawns the

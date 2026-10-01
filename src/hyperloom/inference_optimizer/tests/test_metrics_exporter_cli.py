@@ -23,15 +23,8 @@ def _parse(argv: list[str]):
     return cli._build_parser().parse_args(["optimize", "--model", "/tmp/m", *argv])
 
 
-def test_defaults_match_the_exporter() -> None:
-    from hyperloom.observability import exporter
-
-    assert me.DEFAULT_LISTEN == exporter.DEFAULT_LISTEN
-    assert me.DEFAULT_GRACE_SEC == exporter.DEFAULT_GRACE_SEC
-
-
 def test_enabled_by_default() -> None:
-    assert me.resolve_launch(_parse([]), {}) == me.ExporterLaunch(listen="127.0.0.1:9477", grace_sec=120.0)
+    assert me.resolve_launch(_parse([]), {}) == me.ExporterLaunch(listen=("127.0.0.1", 9477), grace_sec=120.0)
 
 
 @pytest.mark.parametrize(
@@ -48,23 +41,54 @@ def test_disabled_by_flag_or_env(argv, env) -> None:
 
 def test_env_configures_and_flags_win() -> None:
     env = {"HYPERLOOM_METRICS_LISTEN": "0.0.0.0:9500", "HYPERLOOM_METRICS_GRACE_SEC": "30"}
-    assert me.resolve_launch(_parse([]), env) == me.ExporterLaunch(listen="0.0.0.0:9500", grace_sec=30.0)
+    assert me.resolve_launch(_parse([]), env) == me.ExporterLaunch(listen=("0.0.0.0", 9500), grace_sec=30.0)
     flagged = _parse(["--metrics-listen", "127.0.0.1:9600", "--metrics-grace-sec", "5"])
-    assert me.resolve_launch(flagged, env) == me.ExporterLaunch(listen="127.0.0.1:9600", grace_sec=5.0)
+    assert me.resolve_launch(flagged, env) == me.ExporterLaunch(listen=("127.0.0.1", 9600), grace_sec=5.0)
 
 
-def test_a_bad_grace_env_falls_back_to_the_default() -> None:
-    assert me.resolve_launch(_parse([]), {"HYPERLOOM_METRICS_GRACE_SEC": "soon"}).grace_sec == 120.0
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--metrics-listen", "nonsense"],
+        ["--metrics-listen", "127.0.0.1:70000"],
+        ["--metrics-grace-sec", "soon"],
+        ["--metrics-grace-sec", "nan"],
+        ["--metrics-grace-sec", "inf"],
+        ["--metrics-grace-sec", "-1"],
+    ],
+)
+def test_a_bad_flag_is_rejected_by_the_parser(argv, capsys) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        _parse(argv)
+    assert exit_info.value.code == 2
+    assert argv[0] in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("HYPERLOOM_METRICS_LISTEN", "nonsense"),
+        ("HYPERLOOM_METRICS_GRACE_SEC", "soon"),
+        ("HYPERLOOM_METRICS_GRACE_SEC", "nan"),
+        ("HYPERLOOM_METRICS_GRACE_SEC", "inf"),
+        ("HYPERLOOM_METRICS_GRACE_SEC", "-5"),
+    ],
+)
+def test_a_bad_env_value_warns_and_keeps_the_default(name, value, caplog) -> None:
+    launch = me.resolve_launch(_parse([]), {name: value})
+    assert launch == me.ExporterLaunch(listen=("127.0.0.1", 9477), grace_sec=120.0)
+    assert [record.levelname for record in caplog.records] == ["WARNING"]
+    assert name in caplog.text
 
 
 def test_a_malformed_enable_env_keeps_the_exporter_on(caplog) -> None:
     launch = me.resolve_launch(_parse([]), {"HYPERLOOM_METRICS_EXPORTER": "maybe"})
-    assert launch == me.ExporterLaunch(listen="127.0.0.1:9477", grace_sec=120.0)
+    assert launch == me.ExporterLaunch(listen=("127.0.0.1", 9477), grace_sec=120.0)
     assert "HYPERLOOM_METRICS_EXPORTER" in caplog.text
 
 
 def test_build_command(tmp_path: Path) -> None:
-    command = me.build_command(tmp_path, me.ExporterLaunch("127.0.0.1:9477", 120.0), parent_pid=99, python="/py")
+    command = me.build_command(tmp_path, me.ExporterLaunch(("127.0.0.1", 9477), 120.0), parent_pid=99, python="/py")
     assert command == [
         "/py",
         "-m",
@@ -80,7 +104,7 @@ def test_build_command(tmp_path: Path) -> None:
     ]
 
 
-def test_spawns_detached_with_its_log_in_runtime(tmp_path: Path) -> None:
+def test_spawns_detached_with_its_log_in_runtime(tmp_path: Path, capsys) -> None:
     calls: list[tuple[list[str], dict]] = []
 
     def fake_popen(command, **kwargs):
@@ -94,6 +118,7 @@ def test_spawns_detached_with_its_log_in_runtime(tmp_path: Path) -> None:
     assert kwargs["stdin"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.STDOUT
     assert (tmp_path / "runtime" / "metrics_exporter.log").exists()
+    assert "[metrics] exporter pid=? starting on http://127.0.0.1:9477/metrics" in capsys.readouterr().err
 
 
 def test_disabled_never_spawns(tmp_path: Path) -> None:

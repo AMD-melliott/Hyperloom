@@ -30,6 +30,7 @@ from hyperloom.common.llm_config import (
     DEFAULT_CODEX_MODEL,
 )
 from hyperloom.orchestrator.scoring.proposal_scorer import DEFAULT_SCORER_MODELS
+from hyperloom.observability.exporter_config import DEFAULT_GRACE_SEC, DEFAULT_LISTEN, parse_grace_sec, parse_listen
 
 #: Fallback wall-clock budget. Named because ``--resume-from`` reads it back as
 #: the "operator did not set this" signal: unlike the target flags, this one has
@@ -489,15 +490,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     opt.add_argument(
         "--metrics-listen",
+        type=parse_listen,
         default=None,
-        help="HOST:PORT for the metrics exporter (default 127.0.0.1:9477, or "
+        help=f"HOST:PORT for the metrics exporter (default {DEFAULT_LISTEN}, or "
         "$HYPERLOOM_METRICS_LISTEN). Use 0.0.0.0:9477 for a remote Prometheus.",
     )
     opt.add_argument(
         "--metrics-grace-sec",
-        type=float,
+        type=parse_grace_sec,
         default=None,
-        help="Seconds the exporter keeps serving after the run exits (default 120, or $HYPERLOOM_METRICS_GRACE_SEC).",
+        help=f"Seconds the exporter keeps serving after the run exits (default {DEFAULT_GRACE_SEC:g}, "
+        "or $HYPERLOOM_METRICS_GRACE_SEC).",
     )
     opt.add_argument("--isl", type=int, default=None, help=f"Input sequence length (default {DEFAULT_ISL})")
     opt.add_argument("--osl", type=int, default=None, help=f"Output sequence length (default {DEFAULT_OSL})")

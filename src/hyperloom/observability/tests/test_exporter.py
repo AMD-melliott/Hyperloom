@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import argparse
 import errno
 import json
 import os
@@ -22,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from hyperloom.observability import exporter as exp
+from hyperloom.observability import exporter as exp, exporter_config
 from hyperloom.observability.collector import SessionMonitor
 from hyperloom.observability.sources.base import SourceResult
 
@@ -204,13 +205,24 @@ def lock_result(pid: int | None, alive: bool | None) -> Callable[[Path], SourceR
     [("127.0.0.1:9477", ("127.0.0.1", 9477)), ("0.0.0.0:0", ("0.0.0.0", 0)), (":9477", ("", 9477))],
 )
 def test_parse_listen_accepts(value: str, expected: tuple[str, int]) -> None:
-    assert exp.parse_listen(value) == expected
+    assert exporter_config.parse_listen(value) == expected
 
 
 @pytest.mark.parametrize("value", ["9477", "host:abc", "host:70000", "[::1]:9477", ""])
 def test_parse_listen_rejects(value: str) -> None:
-    with pytest.raises(ValueError):
-        exp.parse_listen(value)
+    with pytest.raises(argparse.ArgumentTypeError):
+        exporter_config.parse_listen(value)
+
+
+@pytest.mark.parametrize(("value", "expected"), [("0", 0.0), ("1.5", 1.5), ("120", 120.0)])
+def test_parse_grace_sec_accepts(value: str, expected: float) -> None:
+    assert exporter_config.parse_grace_sec(value) == expected
+
+
+@pytest.mark.parametrize("value", ["soon", "nan", "inf", "-inf", "-1", ""])
+def test_parse_grace_sec_rejects(value: str) -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        exporter_config.parse_grace_sec(value)
 
 
 def test_watchdog_without_a_parent_runs_forever(tmp_path: Path) -> None:
@@ -348,8 +360,11 @@ def test_bind_does_not_retry_other_errors(session_dir: Path, monkeypatch) -> Non
     assert slept == []
 
 
-def test_main_rejects_a_bad_listen_address(session_dir: Path) -> None:
-    assert exp.main(["--session-dir", str(session_dir), "--listen", "nonsense"]) == exp.EXIT_CONFIG_ERROR
+@pytest.mark.parametrize(("flag", "value"), [("--listen", "nonsense"), ("--grace-sec", "nan")])
+def test_main_rejects_a_bad_flag(session_dir: Path, flag: str, value: str) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        exp.main(["--session-dir", str(session_dir), flag, value])
+    assert exit_info.value.code == 2
 
 
 def _free_port() -> int:

@@ -19,27 +19,36 @@ import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
 from hyperloom.common.env import EnvValueError, env_bool
+from hyperloom.observability.exporter_config import DEFAULT_GRACE_SEC, DEFAULT_LISTEN, parse_grace_sec, parse_listen
 
 log = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 ENV_ENABLE = "HYPERLOOM_METRICS_EXPORTER"
 ENV_LISTEN = "HYPERLOOM_METRICS_LISTEN"
 ENV_GRACE = "HYPERLOOM_METRICS_GRACE_SEC"
-
-# Kept equal to hyperloom.observability.exporter's defaults by a test; not
-# imported, so the optimizer CLI does not load the exporter at startup.
-DEFAULT_LISTEN = "127.0.0.1:9477"
-DEFAULT_GRACE_SEC = 120.0
 
 LOG_RELPATH = ("runtime", "metrics_exporter.log")
 
 
 @dataclass(frozen=True)
 class ExporterLaunch:
-    listen: str
+    listen: tuple[str, int]
     grace_sec: float
+
+
+def _from_env(environ: Mapping[str, str], name: str, parse: Callable[[str], T], default: T) -> T:
+    raw = environ.get(name, "").strip()
+    if raw:
+        try:
+            return parse(raw)
+        except argparse.ArgumentTypeError as exc:
+            log.warning("ignoring %s=%r: %s; using the default", name, raw, exc)
+    return default
 
 
 def resolve_launch(args: argparse.Namespace, environ: Mapping[str, str]) -> ExporterLaunch | None:
@@ -53,26 +62,24 @@ def resolve_launch(args: argparse.Namespace, environ: Mapping[str, str]) -> Expo
         enabled = True
     if not enabled:
         return None
-    listen = getattr(args, "metrics_listen", None) or environ.get(ENV_LISTEN, "").strip() or DEFAULT_LISTEN
+    listen = getattr(args, "metrics_listen", None)
+    if listen is None:
+        listen = _from_env(environ, ENV_LISTEN, parse_listen, parse_listen(DEFAULT_LISTEN))
     grace = getattr(args, "metrics_grace_sec", None)
     if grace is None:
-        raw = environ.get(ENV_GRACE, "").strip()
-        try:
-            grace = float(raw) if raw else DEFAULT_GRACE_SEC
-        except ValueError:
-            log.warning("ignoring %s=%r: not a number", ENV_GRACE, raw)
-            grace = DEFAULT_GRACE_SEC
-    return ExporterLaunch(listen=listen, grace_sec=float(grace))
+        grace = _from_env(environ, ENV_GRACE, parse_grace_sec, DEFAULT_GRACE_SEC)
+    return ExporterLaunch(listen=listen, grace_sec=grace)
 
 
 def build_command(
     session_dir: Path, launch: ExporterLaunch, *, parent_pid: int, python: str = sys.executable
 ) -> list[str]:
+    host, port = launch.listen
     return [
         python, "-m", "hyperloom.observability.exporter",
         "--session-dir", str(session_dir),
         "--parent-pid", str(parent_pid),
-        "--listen", launch.listen,
+        "--listen", f"{host}:{port}",
         "--grace-sec", str(launch.grace_sec),
     ]  # fmt: skip
 
@@ -105,10 +112,10 @@ def start_metrics_exporter(
     except OSError:
         log.warning("metrics exporter failed to start; continuing without /metrics", exc_info=True)
         return None
-    log.info(
-        "metrics exporter pid=%s serving http://%s/metrics (log: %s)",
-        getattr(proc, "pid", "?"),
-        launch.listen,
-        log_path,
+    host, port = launch.listen
+    print(
+        f"[metrics] exporter pid={getattr(proc, 'pid', '?')} starting on http://{host or '0.0.0.0'}:{port}/metrics"
+        f" (log: {log_path})",
+        file=sys.stderr,
     )
     return proc
