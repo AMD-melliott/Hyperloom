@@ -32,7 +32,7 @@ def test_dashboard_only_uses_real_hyperloom_metrics(name: str) -> None:
     assert used, "dashboard queries no hyperloom metrics"
     assert used <= PINNED_METRIC_NAMES, f"dashboard references unknown metrics: {used - PINNED_METRIC_NAMES}"
     variable = json.dumps(dashboard["templating"])
-    assert "hyperloom_session_info" in variable
+    assert "hyperloom_session_" in variable
 
 
 def test_scrape_configs_point_at_the_exporter_endpoints() -> None:

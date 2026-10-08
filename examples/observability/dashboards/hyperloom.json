@@ -2,161 +2,1856 @@
   "title": "Hyperloom session",
   "uid": "hyperloom-session",
   "schemaVersion": 39,
-  "refresh": "15s",
-  "time": {"from": "now-6h", "to": "now"},
-  "tags": ["hyperloom"],
-  "links": [{"title": "Run overview", "type": "link", "url": "/d/hyperloom-overview/hyperloom-overview", "icon": "dashboard"}],
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-12h",
+    "to": "now"
+  },
+  "tags": [
+    "hyperloom"
+  ],
+  "timezone": "browser",
+  "editable": true,
+  "graphTooltip": 1,
+  "description": "One Hyperloom session: summary, timeline and, in the collapsed row, live runtime status. Pick any session Prometheus still holds; set the time range to cover it.",
+  "links": [
+    {
+      "title": "Run history",
+      "type": "link",
+      "url": "/d/hyperloom-overview/hyperloom-history",
+      "icon": "dashboard"
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "Kept",
+        "enable": true,
+        "iconColor": "green",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "target": {
+          "refId": "Anno",
+          "expr": "max by (ordinal, lever, outcome) (hyperloom_optimization_info{session_id=\"$session\",outcome=\"KEEP\"}) unless max by (ordinal, lever, outcome) (hyperloom_optimization_info{session_id=\"$session\",outcome=\"KEEP\"} offset 60s)",
+          "step": "60s",
+          "instant": false,
+          "range": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "titleFormat": "KEEP",
+          "textFormat": "{{lever}}",
+          "tagKeys": "outcome"
+        }
+      },
+      {
+        "name": "Reverted",
+        "enable": true,
+        "iconColor": "red",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "target": {
+          "refId": "Anno",
+          "expr": "max by (ordinal, lever, outcome) (hyperloom_optimization_info{session_id=\"$session\",outcome=\"REVERT\"}) unless max by (ordinal, lever, outcome) (hyperloom_optimization_info{session_id=\"$session\",outcome=\"REVERT\"} offset 60s)",
+          "step": "60s",
+          "instant": false,
+          "range": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "titleFormat": "REVERT",
+          "textFormat": "{{lever}}",
+          "tagKeys": "outcome"
+        }
+      }
+    ]
+  },
   "templating": {
     "list": [
-      {"name": "datasource", "type": "datasource", "query": "prometheus", "label": "Datasource"},
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Datasource"
+      },
       {
         "name": "session",
         "label": "Session",
         "type": "query",
-        "datasource": {"type": "prometheus", "uid": "${datasource}"},
-        "query": {"query": "label_values(hyperloom_session_info, session_id)", "refId": "session"},
-        "definition": "label_values(hyperloom_session_info, session_id)",
-        "refresh": 2,
-        "sort": 2
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "sort_desc(label_join(label_replace(label_replace(max by (session_id, model) (last_over_time(hyperloom_session_start_timestamp_seconds[60d])), \"name\", \"$1\", \"model\", \".*/(.*)\"), \"day\", \"$1\", \"session_id\", \".*_(\\\\d{8})T.*\"), \"label\", \" \", \"name\", \"day\"))",
+          "refId": "session"
+        },
+        "definition": "sort_desc(label_join(label_replace(label_replace(max by (session_id, model) (last_over_time(hyperloom_session_start_timestamp_seconds[60d])), \"name\", \"$1\", \"model\", \".*/(.*)\"), \"day\", \"$1\", \"session_id\", \".*_(\\\\d{8})T.*\"), \"label\", \" \", \"name\", \"day\"))",
+        "regex": "/label=\"(?<text>[^\"]+)\".*session_id=\"(?<value>[^\"]+)\"/",
+        "refresh": 1,
+        "sort": 0
       }
     ]
   },
   "panels": [
     {
-      "id": 1, "type": "stat", "title": "Liveness",
-      "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "options": {"textMode": "name", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"refId": "A", "expr": "hyperloom_liveness{session_id=\"$session\"} == 1", "legendFormat": "{{state}}", "instant": true}]
-    },
-    {
-      "id": 2, "type": "stat", "title": "Current phase",
-      "gridPos": {"x": 4, "y": 0, "w": 5, "h": 4},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "options": {"textMode": "name", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"refId": "A", "expr": "hyperloom_phase_current{session_id=\"$session\"} == 1", "legendFormat": "{{phase}}", "instant": true}]
-    },
-    {
-      "id": 3, "type": "stat", "title": "Gain over baseline",
-      "gridPos": {"x": 9, "y": 0, "w": 5, "h": 4},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 1}},
-      "targets": [{"refId": "A", "expr": "hyperloom_gain_percent{session_id=\"$session\"}", "legendFormat": "{{kind}}"}]
-    },
-    {
-      "id": 4, "type": "stat", "title": "Session clock",
-      "gridPos": {"x": 14, "y": 0, "w": 6, "h": 4},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"unit": "s"}},
+      "id": 1,
+      "type": "stat",
+      "title": "Status",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
       "targets": [
-        {"refId": "A", "expr": "hyperloom_session_elapsed_seconds{session_id=\"$session\"}", "legendFormat": "elapsed"},
-        {"refId": "B", "expr": "hyperloom_session_remaining_seconds{session_id=\"$session\"}", "legendFormat": "remaining"}
-      ]
-    },
-    {
-      "id": 5, "type": "stat", "title": "Crashes",
-      "gridPos": {"x": 20, "y": 0, "w": 4, "h": 4},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "targets": [{"refId": "A", "expr": "hyperloom_crashes{session_id=\"$session\"}"}]
-    },
-    {
-      "id": 6, "type": "state-timeline", "title": "Phase timeline",
-      "gridPos": {"x": 0, "y": 4, "w": 24, "h": 5},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {
-        "0": {"text": "idle", "color": "transparent", "index": 0},
-        "1": {"text": "active", "color": "green", "index": 1}
-      }}]}},
-      "options": {"showValue": "never", "mergeValues": true},
-      "targets": [{"refId": "A", "expr": "hyperloom_phase_current{session_id=\"$session\"}", "legendFormat": "{{phase}}"}]
-    },
-    {
-      "id": 7, "type": "timeseries", "title": "Throughput (graded unit)",
-      "gridPos": {"x": 0, "y": 9, "w": 12, "h": 8},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "targets": [
-        {"refId": "A", "expr": "hyperloom_throughput_baseline{session_id=\"$session\"}", "legendFormat": "baseline"},
-        {"refId": "B", "expr": "hyperloom_throughput_best{session_id=\"$session\"}", "legendFormat": "best"}
-      ]
-    },
-    {
-      "id": 8, "type": "bargauge", "title": "Phase budget used",
-      "gridPos": {"x": 12, "y": 9, "w": 12, "h": 8},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
-      "options": {"displayMode": "gradient", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{
-        "refId": "A",
-        "expr": "hyperloom_phase_elapsed_seconds{session_id=\"$session\"} / hyperloom_phase_budget_seconds{session_id=\"$session\"}",
-        "legendFormat": "{{phase}}"
-      }]
-    },
-    {
-      "id": 9, "type": "timeseries", "title": "Tasks by state",
-      "gridPos": {"x": 0, "y": 17, "w": 12, "h": 8},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "targets": [{"refId": "A", "expr": "hyperloom_tasks{session_id=\"$session\"}", "legendFormat": "{{state}}"}]
-    },
-    {
-      "id": 10, "type": "timeseries", "title": "Lane occupancy",
-      "gridPos": {"x": 12, "y": 17, "w": 12, "h": 8},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "targets": [
-        {"refId": "A", "expr": "hyperloom_lane_held{session_id=\"$session\"}", "legendFormat": "{{lane}} held"},
-        {"refId": "B", "expr": "hyperloom_lane_capacity{session_id=\"$session\"}", "legendFormat": "{{lane}} capacity"}
-      ]
-    },
-    {
-      "id": 11, "type": "stat", "title": "Current step: time to deadline",
-      "gridPos": {"x": 0, "y": 25, "w": 12, "h": 4},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"unit": "s"}},
-      "targets": [{
-        "refId": "A",
-        "expr": "hyperloom_current_step_deadline_timestamp_seconds{session_id=\"$session\"} - time()",
-        "legendFormat": "deadline"
-      }]
-    },
-    {
-      "id": 12, "type": "table", "title": "Collection health",
-      "gridPos": {"x": 12, "y": 25, "w": 12, "h": 8},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "targets": [
-        {"refId": "A", "expr": "hyperloom_source_up{session_id=\"$session\"}", "format": "table", "instant": true},
-        {"refId": "B", "expr": "hyperloom_source_age_seconds{session_id=\"$session\"}", "format": "table", "instant": true}
+        {
+          "refId": "A",
+          "expr": "hyperloom_liveness{session_id=\"$session\"} == 1",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{state}}",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B",
+          "expr": "topk(1, max by (reason) (max_over_time(timestamp(hyperloom_stop_info{session_id=\"$session\"})[$__range:1m])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{reason}}",
+          "instant": true,
+          "range": false
+        }
       ],
-      "transformations": [{"id": "merge"}]
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "live": {
+                  "text": "running",
+                  "color": "green",
+                  "index": 0
+                },
+                "stale": {
+                  "text": "stale",
+                  "color": "orange",
+                  "index": 1
+                },
+                "dead": {
+                  "text": "ended",
+                  "color": "text",
+                  "index": 2
+                },
+                "unknown": {
+                  "text": "unknown",
+                  "color": "text",
+                  "index": 3
+                },
+                "target_reached": {
+                  "text": "target reached",
+                  "color": "green",
+                  "index": 4
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "description": "Live state while the optimizer runs; the stop reason once it has ended (kept after the exporter exits).",
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
     },
     {
-      "id": 13, "type": "timeseries", "title": "Exporter",
-      "gridPos": {"x": 0, "y": 29, "w": 12, "h": 4},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "id": 2,
+      "type": "stat",
+      "title": "Phase",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 3,
+        "h": 4
+      },
       "targets": [
-        {"refId": "A", "expr": "hyperloom_exporter_parent_alive{session_id=\"$session\"}", "legendFormat": "optimizer alive"},
-        {"refId": "B", "expr": "hyperloom_state_age_seconds{session_id=\"$session\"}", "legendFormat": "state.json age (s)"}
+        {
+          "refId": "A",
+          "expr": "topk(1, max by (phase) (max_over_time(timestamp(hyperloom_phase_current{session_id=\"$session\"} == 1)[$__range:1m])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{phase}}",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "description": "Current phase, or the last one the session reached.",
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Validated gain",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 7,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "last_over_time(hyperloom_gain_percent{session_id=\"$session\",kind=\"validated\"}[$__range])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "validated",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "description": "Gain over baseline re-measured on a fresh server; the figure to trust.",
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Target gap",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 11,
+        "y": 0,
+        "w": 3,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "last_over_time(hyperloom_target_gap_percent{session_id=\"$session\"}[$__range])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "gap",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.001
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "reached",
+                  "color": "green",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "description": "Remaining gain needed to reach the target. 0 means the target is reached.",
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Baseline \u2192 best",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 14,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "last_over_time(hyperloom_throughput_baseline{session_id=\"$session\"}[$__range])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "baseline",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B",
+          "expr": "last_over_time(hyperloom_throughput_best{session_id=\"$session\"}[$__range])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "best",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "description": "Throughput in the session's graded unit.",
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Accuracy",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 3,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (stage) (last_over_time(hyperloom_accuracy{session_id=\"$session\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{stage}}",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 4,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "description": "Accuracy-eval score of the baseline and of the best adopted stack. Empty for runs recorded before this series existed.",
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Session clock",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 21,
+        "y": 0,
+        "w": 3,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "last_over_time(hyperloom_session_elapsed_seconds{session_id=\"$session\"}[$__range])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "elapsed",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B",
+          "expr": "last_over_time(hyperloom_session_remaining_seconds{session_id=\"$session\"}[$__range])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "remaining",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "description": "Producer session clock.",
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "Timeline",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Throughput (graded unit)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "hyperloom_throughput_baseline{session_id=\"$session\"}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "baseline"
+        },
+        {
+          "refId": "B",
+          "expr": "hyperloom_throughput_best{session_id=\"$session\"}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "best"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisPlacement": "auto"
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "description": "Baseline and best throughput. Markers show kept and reverted attempts.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Gain over baseline",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "hyperloom_gain_percent{session_id=\"$session\"}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{kind}}"
+        },
+        {
+          "refId": "B",
+          "expr": "hyperloom_target_gap_percent{session_id=\"$session\"}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "target gap"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisPlacement": "auto"
+          },
+          "unit": "percent",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "description": "Raw is the provisional per-round sum; validated is re-measured on a fresh server.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "state-timeline",
+      "title": "Phase timeline",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 24,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "hyperloom_phase_current{session_id=\"$session\"}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{phase}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "idle",
+                  "color": "transparent",
+                  "index": 0
+                },
+                "1": {
+                  "text": "active",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "description": "Which phase was active over time.",
+      "options": {
+        "alignValue": "left",
+        "mergeValues": true,
+        "rowHeight": 0.9,
+        "showValue": "never",
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "bargauge",
+      "title": "Time per phase",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 10,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "last_over_time(hyperloom_phase_elapsed_seconds{session_id=\"$session\"}[$__range])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{phase}}",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "description": "Cumulative time charged to each phase.",
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "valueMode": "color",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "table",
+      "title": "Attempts (KEEP and REVERT)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 10,
+        "y": 18,
+        "w": 14,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (ordinal, phase, kind, lever, outcome) (last_over_time(hyperloom_optimization_info{session_id=\"$session\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B",
+          "expr": "max by (ordinal) (last_over_time(hyperloom_optimization_throughput{session_id=\"$session\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "C",
+          "expr": "max by (ordinal) (last_over_time(hyperloom_optimization_gain_percent{session_id=\"$session\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "D",
+          "expr": "max by (ordinal) (last_over_time(hyperloom_optimization_accuracy{session_id=\"$session\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Gain %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Throughput"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Accuracy"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 4
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Outcome"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "KEEP": {
+                        "text": "KEEP",
+                        "color": "green",
+                        "index": 0
+                      },
+                      "REVERT": {
+                        "text": "REVERT",
+                        "color": "red",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "description": "One row per measured KEEP or any REVERT (newest 100), from the optimization journal. Empty for runs recorded before per-attempt series were exported.",
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "ordinal",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value #A": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Time 4": true,
+              "Time 5": true,
+              "Time 6": true,
+              "Time 7": true,
+              "Time 8": true,
+              "Time 9": true,
+              "ordinal 2": true,
+              "ordinal 3": true,
+              "ordinal 4": true,
+              "ordinal 5": true,
+              "ordinal 6": true,
+              "ordinal 7": true,
+              "ordinal 8": true,
+              "ordinal 9": true
+            },
+            "renameByName": {
+              "ordinal": "#",
+              "phase": "Phase",
+              "kind": "Kind",
+              "lever": "Lever",
+              "outcome": "Outcome",
+              "Value #B": "Throughput",
+              "Value #C": "Gain %",
+              "Value #D": "Accuracy"
+            },
+            "indexByName": {
+              "#": 0,
+              "Phase": 1,
+              "Kind": 2,
+              "Lever": 3,
+              "Outcome": 4,
+              "Throughput": 5,
+              "Gain %": 6,
+              "Accuracy": 7
+            }
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "#",
+                "destinationType": "number"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "#"
+              }
+            ]
+          }
+        }
       ]
     },
     {
-      "id": 14, "type": "stat", "title": "Running tasks",
-      "gridPos": {"x": 0, "y": 33, "w": 8, "h": 4},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "options": {"textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"refId": "A", "expr": "hyperloom_running_tasks{session_id=\"$session\"} > 0", "legendFormat": "{{kind}}", "instant": true}]
+      "id": 14,
+      "type": "timeseries",
+      "title": "Tasks by state",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 26,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "hyperloom_tasks{session_id=\"$session\"}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{state}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisPlacement": "auto",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "decimals": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "running"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "succeeded"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "description": "Coordinator task counts by state.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
     },
     {
-      "id": 15, "type": "stat", "title": "Running task elapsed",
-      "gridPos": {"x": 8, "y": 33, "w": 8, "h": 4},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"unit": "s"}},
-      "targets": [{"refId": "A", "expr": "hyperloom_running_task_elapsed_seconds{session_id=\"$session\"}", "legendFormat": "{{kind}}", "instant": true}]
-    },
-    {
-      "id": 16, "type": "stat", "title": "Time since task progress",
-      "description": "Fresh timestamped task progress, not database writes or lease refreshes. Absence means no progress timestamp was published.",
-      "gridPos": {"x": 16, "y": 33, "w": 8, "h": 4},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"unit": "s"}},
-      "targets": [{"refId": "A", "expr": "hyperloom_running_task_progress_age_seconds{session_id=\"$session\"}", "legendFormat": "{{kind}}", "instant": true}]
+      "id": 24,
+      "type": "row",
+      "title": "Runtime status (live runs)",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "id": 15,
+          "type": "stat",
+          "title": "Current step: time to deadline",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 34,
+            "w": 6,
+            "h": 4
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "hyperloom_current_step_deadline_timestamp_seconds{session_id=\"$session\"} - time()",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "legendFormat": "deadline",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 600
+                  },
+                  {
+                    "color": "green",
+                    "value": 1800
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "description": "Time before the optimizer kills the blocking step it is in. Absent when no step is published.",
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          }
+        },
+        {
+          "id": 16,
+          "type": "stat",
+          "title": "Time since task progress",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 6,
+            "y": 34,
+            "w": 6,
+            "h": 4
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "hyperloom_running_task_progress_age_seconds{session_id=\"$session\"}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "legendFormat": "{{kind}}",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 600
+                  },
+                  {
+                    "color": "red",
+                    "value": 1800
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "description": "Age of the freshest progress note from running tasks. Absent until a note is published; some actions (such as conc_sweep) never publish one.",
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          }
+        },
+        {
+          "id": 17,
+          "type": "stat",
+          "title": "Running task elapsed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 34,
+            "w": 6,
+            "h": 4
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "hyperloom_running_task_elapsed_seconds{session_id=\"$session\"}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "legendFormat": "{{kind}}",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "blue"
+              }
+            },
+            "overrides": []
+          },
+          "description": "Age of the oldest running task per action.",
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          }
+        },
+        {
+          "id": 18,
+          "type": "stat",
+          "title": "Running tasks",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 18,
+            "y": 34,
+            "w": 6,
+            "h": 4
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "hyperloom_running_tasks{session_id=\"$session\"} > 0",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "legendFormat": "{{kind}}",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "blue"
+              }
+            },
+            "overrides": []
+          },
+          "description": "Running tasks per action.",
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          }
+        },
+        {
+          "id": 19,
+          "type": "bargauge",
+          "title": "Current phase budget used",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 38,
+            "w": 8,
+            "h": 5
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "hyperloom_phase_elapsed_seconds{session_id=\"$session\"} / hyperloom_phase_budget_seconds{session_id=\"$session\"}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "legendFormat": "{{phase}}",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1.5,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 0.8
+                  },
+                  {
+                    "color": "red",
+                    "value": 1.0
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "description": "Only the current phase has a published budget. Past 100% the phase is over its allotment; the budget is renormalised over the remaining phases, so it can exceed the nominal share.",
+          "options": {
+            "displayMode": "gradient",
+            "orientation": "horizontal",
+            "showUnfilled": true,
+            "valueMode": "color",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          }
+        },
+        {
+          "id": 20,
+          "type": "timeseries",
+          "title": "Lane occupancy",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 8,
+            "y": 38,
+            "w": 8,
+            "h": 5
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "hyperloom_lane_held{session_id=\"$session\"}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "legendFormat": "{{lane}} held"
+            },
+            {
+              "refId": "B",
+              "expr": "hyperloom_lane_capacity{session_id=\"$session\"}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "legendFormat": "{{lane}} capacity"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": true,
+                "axisPlacement": "auto"
+              },
+              "decimals": 0
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*capacity"
+                },
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "dash",
+                      "dash": [
+                        8,
+                        6
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "description": "Concurrency lanes: holders against the configured cap.",
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            }
+          }
+        },
+        {
+          "id": 21,
+          "type": "timeseries",
+          "title": "Freshness",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 16,
+            "y": 38,
+            "w": 8,
+            "h": 5
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "hyperloom_state_age_seconds{session_id=\"$session\"}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "legendFormat": "state.json age"
+            },
+            {
+              "refId": "B",
+              "expr": "hyperloom_last_activity_age_seconds{session_id=\"$session\"}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "legendFormat": "last activity age"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": true,
+                "axisPlacement": "auto"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 600
+                  },
+                  {
+                    "color": "red",
+                    "value": 1800
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "description": "How long since the optimizer last wrote anything. Rising lines mean the run may be stuck.",
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            }
+          }
+        },
+        {
+          "id": 22,
+          "type": "stat",
+          "title": "Optimizer process",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 43,
+            "w": 4,
+            "h": 4
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "hyperloom_exporter_parent_alive{session_id=\"$session\"}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "legendFormat": "optimizer",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "1": {
+                      "text": "alive",
+                      "color": "green",
+                      "index": 0
+                    },
+                    "0": {
+                      "text": "exited",
+                      "color": "text",
+                      "index": 1
+                    }
+                  }
+                }
+              ],
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "blue"
+              }
+            },
+            "overrides": []
+          },
+          "description": "1 while the optimizer that spawned the exporter is running.",
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          }
+        },
+        {
+          "id": 23,
+          "type": "table",
+          "title": "Collection health",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 4,
+            "y": 43,
+            "w": 20,
+            "h": 6
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "hyperloom_source_up{session_id=\"$session\"}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "format": "table",
+              "instant": true,
+              "range": false
+            },
+            {
+              "refId": "B",
+              "expr": "hyperloom_source_age_seconds{session_id=\"$session\"}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "format": "table",
+              "instant": true,
+              "range": false
+            },
+            {
+              "refId": "C",
+              "expr": "hyperloom_source_consecutive_failures{session_id=\"$session\"}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "format": "table",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Up"
+                },
+                "properties": [
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "1": {
+                            "text": "up",
+                            "color": "green",
+                            "index": 0
+                          },
+                          "0": {
+                            "text": "down",
+                            "color": "red",
+                            "index": 1
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Age"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 1
+                  }
+                ]
+              }
+            ]
+          },
+          "description": "One row per data source the exporter reads. Up is 0 when the last read failed; absent artifacts count as up.",
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          },
+          "transformations": [
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "source",
+                "mode": "outer"
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time 1": true,
+                  "Time 2": true,
+                  "Time 3": true,
+                  "Time 4": true,
+                  "Time": true
+                },
+                "renameByName": {
+                  "source": "Source",
+                  "Value #A": "Up",
+                  "Value #B": "Age",
+                  "Value #C": "Failures"
+                },
+                "indexByName": {
+                  "Source": 0,
+                  "Up": 1,
+                  "Age": 2,
+                  "Failures": 3
+                }
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
