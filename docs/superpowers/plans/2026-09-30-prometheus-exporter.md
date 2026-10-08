@@ -10,13 +10,20 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-30-prometheus-exporter-design.md`
 
+**Implementation status:** The code sketches below record the original plan,
+not the final runtime contract. Final behavior is documented in the linked spec:
+busy-port retries follow the parent watchdog rather than a fixed 15-second
+timeout, inference HTTP-SD is session-scoped, and render-error HELP text counts
+failures across scrapes. Unused BLE001 directives are removed while their
+isolation reasons remain plain comments.
+
 ## Global Constraints
 
 - No new runtime dependencies: `pyproject.toml` keeps `dependencies = []`. No `prometheus_client`.
 - The exporter must never fail, slow, or alter a run; every failure path in the spawn helper logs one warning and returns.
 - The observability layer never writes the session dir. The exporter's log file is opened by the *optimizer* (parent) at `<session_dir>/runtime/metrics_exporter.log`.
 - `import hyperloom.observability` must not import `hyperloom.orchestrator` (enforced by `tests/test_invariants.py::test_package_import_does_not_pull_the_orchestrator`). The exporter module lives in the package, so it is subject to the same rule.
-- Defaults: listen `127.0.0.1:9477`, grace `120` s, watchdog interval `2` s, bind retry `15` s, inference discovery cadence `15` s.
+- Defaults: listen `127.0.0.1:9477`, grace `120` s, watchdog interval `2` s, inference discovery cadence `15` s. Busy-port retries continue until binding succeeds or the parent watchdog requests exit; parentless exporters try once.
 - Flags / env: `--no-metrics-exporter` / `HYPERLOOM_METRICS_EXPORTER=0`; `--metrics-listen HOST:PORT` / `HYPERLOOM_METRICS_LISTEN`; `--metrics-grace-sec N` / `HYPERLOOM_METRICS_GRACE_SEC`. The flag wins over the env var.
 - Metric prefix `hyperloom_`. Constant labels on every series once a snapshot exists: `session_id`, `model`, `framework`. No other label takes unbounded values. `None` values are omitted, never exported as 0.
 - Spawn with `start_new_session=True`; the optimizer never kills the exporter.

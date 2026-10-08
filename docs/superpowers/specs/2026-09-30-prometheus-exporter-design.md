@@ -175,13 +175,16 @@ returns 200 with `hyperloom_exporter_build_info`,
 
 The inference server's port changes between launches and there is no server at
 all during some phases. `/sd/inference` returns Prometheus HTTP-SD JSON built
-from `sources.server.discover_base_url()`:
+from `sources.server.find_session_server(session_dir)`, with an explicit
+`HYPERLOOM_VLLM_URL` override taking precedence. Session discovery reads the
+live lifecycle server's `{framework}_{port}.pid` / `.json` records; it never
+uses the host-wide default-port probe:
 
 ```json
 [{"targets": ["127.0.0.1:8000"], "labels": {"session_id": "...", "model": "...", "framework": "vllm"}}]
 ```
 
-or `[]` when no server is listening. This is served over HTTP instead of
+or `[]` when no live server is found for this session. This is served over HTTP instead of
 written to a `file_sd` file, so the exporter keeps the observability layer's
 no-writes guarantee and a Kubernetes-hosted Prometheus (which cannot read a host
 file) can use it through `httpSDConfigs`. Discovery runs on its own collector
@@ -222,13 +225,17 @@ configure the exporter without editing command lines.
 
 ### Bind and handover
 
-- The server sets `SO_REUSEADDR` and retries a busy port with backoff for up to
-  15s, then gives up with one warning and exits 0. The run is unaffected.
+- The server sets `SO_REUSEADDR` and retries a busy port with capped backoff
+  while `--parent-pid` is supplied and the watchdog has not requested exit.
+  SIGTERM/SIGINT interrupt the wait. Without a parent, it tries once; a busy
+  port produces one warning and a clean exit 0. Other bind errors are not
+  retried. The run is unaffected.
 - A previous exporter still in its grace period gives the port up when a new
   optimizer takes over the session: each watchdog pass reads the session lock
   (through the existing read-only `lockfile` source), and if the lock's owner
   PID is alive and differs from `--parent-pid`, the old exporter exits at once.
-  The 15s retry covers the gap.
+  A new session can wait through the previous exporter's remaining grace period
+  rather than abandoning its endpoint after a fixed timeout.
 
 ### Parent watchdog and grace
 
@@ -342,7 +349,8 @@ One dashboard with a `session_id` variable:
   - parent death leads to `parent_alive 0`, then exit after the (shortened)
     grace period;
   - lock handover makes the old exporter exit early;
-  - a busy port leads to retry and then a clean exit 0;
+  - a busy port retries until it becomes free or the parent watchdog requests
+    exit; without a parent it leads to one attempt and a clean exit 0;
   - the exporter writes nothing to the session dir (asserted with the existing
     read-only invariant helpers).
 - **Run wiring** (`inference_optimizer/tests/`):
