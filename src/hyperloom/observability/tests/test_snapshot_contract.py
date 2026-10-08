@@ -29,9 +29,12 @@ Expired lane lease                          not counted as holding the lane
 
 from __future__ import annotations
 
+import json
 import socket
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -255,6 +258,123 @@ def test_banked_totals_win_over_history_when_present(tmp_path: Path, frozen_cloc
     assert snapshot is not None
     prelude = next(p for p in snapshot.phases if p.name == "PRELUDE")
     assert prelude.elapsed_s == 9999.0
+
+
+@pytest.mark.parametrize("max_minutes", [0, 720])
+@pytest.mark.parametrize(
+    ("phase", "phase_started_unix", "totals", "expected_phase_s"),
+    [
+        ("PRELUDE", SESSION_START_UNIX, {"PRELUDE": 1800.0}, 9000.0),
+        (
+            "FRAMEWORK_AGENT",
+            SESSION_START_UNIX + 9000.0,
+            {"PRELUDE": 1800.0, "FRAMEWORK_AGENT": 5400.0},
+            10800.0,
+        ),
+    ],
+)
+def test_resumed_duration_and_budgets_match_producer(
+    tmp_path: Path,
+    max_minutes: int,
+    phase: str,
+    phase_started_unix: float,
+    totals: dict[str, float],
+    expected_phase_s: float,
+) -> None:
+    """Banked legs and the live segment are disjoint, even across a stopped gap."""
+    from hyperloom.observability.progress import extrapolate_to
+    from hyperloom.orchestrator.phases import machine_state
+    from hyperloom.orchestrator.state.shared_state import SharedState
+
+    sd = tmp_path / "resumed"
+    state_path = write_state(
+        sd,
+        phase=phase,
+        phase_started_unix=phase_started_unix,
+        phase_elapsed_totals=totals,
+        resumed_ts="2026-08-06T02:00:00+00:00",
+        elapsed_charged_sec=8940.0,
+        leg_anchor_unix=FROZEN_NOW - 60.0,
+        max_minutes=max_minutes,
+    )
+    write_lock(sd, pid=1, hostname=socket.gethostname())
+    producer = SimpleNamespace(**json.loads(state_path.read_text(encoding="utf-8")))
+    snapshot = load_snapshot(sd, now_unix=lambda: FROZEN_NOW, activity=False)
+
+    assert snapshot is not None
+    assert snapshot.liveness is Liveness.LIVE
+    current = snapshot.current_phase_progress
+    assert current is not None
+    assert current.elapsed_s == expected_phase_s
+    assert current.elapsed_s == machine_state.phase_cumulative_seconds(producer, now_unix=FROZEN_NOW)
+    assert current.budget_total_s == machine_state._phase_budget_total_seconds(producer, now_unix=FROZEN_NOW)
+    assert current.budget_remaining_s == machine_state.phase_budget_remaining_seconds(producer, now_unix=FROZEN_NOW)
+    assert snapshot.session_elapsed_s == 9000.0
+    assert snapshot.session_elapsed_s == pytest.approx(
+        SharedState.elapsed_minutes(producer, now=datetime.fromtimestamp(FROZEN_NOW, tz=timezone.utc)) * 60.0
+    )
+    assert snapshot.session_remaining_s == machine_state.session_remaining_seconds(producer, now_unix=FROZEN_NOW)
+    if phase != "PRELUDE":
+        assert next(row for row in snapshot.phases if row.name == "PRELUDE").elapsed_s == 1800.0
+
+    advanced = extrapolate_to(snapshot, FROZEN_NOW + 120.0)
+    assert advanced.session_elapsed_s == 9120.0
+    assert advanced.current_phase_progress is not None
+    assert advanced.current_phase_progress.elapsed_s == expected_phase_s + 120.0
+    assert [row for row in advanced.phases if not row.is_current] == [
+        row for row in snapshot.phases if not row.is_current
+    ]
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        {"stop_reason": "time_exhausted", "stop_ts": "2026-08-06T03:00:00+00:00"},
+        {"leg_ended_ts": "2026-08-06T03:00:00+00:00"},
+    ],
+)
+def test_resumed_duration_ends_at_recorded_boundary_not_teardown(tmp_path: Path, boundary: dict[str, str]) -> None:
+    sd = tmp_path / "stopped-resume"
+    write_state(
+        sd,
+        phase="PRELUDE",
+        phase_started_unix=SESSION_START_UNIX,
+        phase_elapsed_totals={"PRELUDE": 1800.0},
+        resumed_ts="2026-08-06T02:00:00+00:00",
+        elapsed_charged_sec=5400.0,
+        leg_anchor_unix=SESSION_START_UNIX + 10_860.0,
+        lifecycle=[{"ts": "2026-08-06T03:30:00+00:00", "phase": "PRELUDE", "status": "END"}],
+        **boundary,
+    )
+    soon = load_snapshot(sd, now_unix=lambda: FROZEN_NOW, activity=False)
+    later = load_snapshot(sd, now_unix=lambda: FROZEN_NOW + 7 * 86400.0, activity=False)
+
+    assert soon is not None and later is not None
+    assert soon.session_elapsed_s == later.session_elapsed_s == 5400.0
+    assert soon.session_remaining_s == later.session_remaining_s == 37_800.0
+    assert soon.current_phase_progress is not None and later.current_phase_progress is not None
+    assert soon.current_phase_progress.elapsed_s == later.current_phase_progress.elapsed_s == 5400.0
+
+
+@pytest.mark.parametrize("field", ["elapsed_charged_sec", "leg_anchor_unix"])
+def test_malformed_duration_accounting_does_not_fall_back_to_original_start(tmp_path: Path, field: str) -> None:
+    sd = tmp_path / "malformed-clock"
+    write_state(sd, **{field: "not-a-number"})
+
+    with pytest.raises(ValueError, match="not-a-number"):
+        load_snapshot(sd, now_unix=lambda: FROZEN_NOW, activity=False)
+
+
+@pytest.mark.parametrize("max_minutes", [0, 60])
+def test_unarmed_session_clock_uses_charged_total_without_capping_elapsed(tmp_path: Path, max_minutes: int) -> None:
+    sd = tmp_path / "between-legs"
+    write_state(sd, max_minutes=max_minutes, elapsed_charged_sec=7200.0, leg_anchor_unix=0.0)
+
+    snapshot = load_snapshot(sd, now_unix=lambda: FROZEN_NOW + 7 * 86400.0, activity=False)
+
+    assert snapshot is not None
+    assert snapshot.session_elapsed_s == 7200.0
+    assert snapshot.session_remaining_s == (0.0 if max_minutes else None)
 
 
 def test_explore_accum_stays_tri_state(tmp_path: Path, frozen_clock) -> None:

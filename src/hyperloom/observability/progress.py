@@ -36,9 +36,31 @@ and inconsistent between fields computed microseconds apart.
 from __future__ import annotations
 
 import dataclasses
-from typing import Any
+from typing import Any, Mapping
 
 from .model import Liveness, PhaseProgress, Snapshot
+
+
+class ProgressState:
+    """Read-only scheduler view retaining the persisted run-leg clocks.
+
+    The renderer's snapshot does not carry these producer accounting fields;
+    dropping them would charge resumed phases and sessions from their original
+    start instead of their current unbanked segment.
+    """
+
+    __slots__ = ("_snapshot", "resumed_ts", "elapsed_charged_sec", "leg_anchor_unix")
+
+    def __init__(self, snapshot: Snapshot, state: Mapping[str, Any]) -> None:
+        """Join snapshot fields with the producer's persisted clock anchors."""
+        self._snapshot = snapshot
+        self.resumed_ts = str(state.get("resumed_ts") or "")
+        self.elapsed_charged_sec = float(state.get("elapsed_charged_sec", 0.0) or 0.0)
+        self.leg_anchor_unix = float(state.get("leg_anchor_unix", 0.0) or 0.0)
+
+    def __getattr__(self, item: str) -> Any:
+        """Delegate the remaining scheduler fields to the frozen snapshot."""
+        return getattr(self._snapshot, item)
 
 
 def phase_names() -> tuple[str, ...]:
@@ -105,12 +127,12 @@ def normalized_budget(snapshot_or_state: Any) -> dict[str, float]:
     return normalize_budget_pct(getattr(snapshot_or_state, "phase_budget_pct", None))
 
 
-def build_phase_progress(snapshot: Snapshot, *, now_unix: float) -> tuple[PhaseProgress, ...]:
+def build_phase_progress(snapshot: Snapshot | ProgressState, *, now_unix: float) -> tuple[PhaseProgress, ...]:
     """Derive per-phase progress rows for every phase in the pipeline.
 
     Args:
-        snapshot: A snapshot populated with the ``machine_state`` contract
-            fields (phase, ``phase_elapsed_totals``, budget, clock anchors).
+        snapshot: A snapshot or progress view populated with the
+            ``machine_state`` contract fields and persisted run-leg clocks.
         now_unix: Current time, threaded into every upstream call.
 
     Returns:
@@ -162,7 +184,7 @@ def build_phase_progress(snapshot: Snapshot, *, now_unix: float) -> tuple[PhaseP
     return tuple(rows)
 
 
-def _safe_cap(cap_fn: Any, snapshot: Snapshot, phase: str, budget: dict[str, float]) -> float | None:
+def _safe_cap(cap_fn: Any, snapshot: Snapshot | ProgressState, phase: str, budget: dict[str, float]) -> float | None:
     """Return the absolute cap for ``phase``, or ``None``.
 
     ``phase_cap_seconds`` reads ``state.phase`` rather than taking a phase
@@ -194,7 +216,7 @@ class _PhaseView:
 
     __slots__ = ("_snapshot", "phase")
 
-    def __init__(self, snapshot: Snapshot, phase: str) -> None:
+    def __init__(self, snapshot: Snapshot | ProgressState, phase: str) -> None:
         """Bind the snapshot and the phase to report.
 
         Args:
@@ -309,32 +331,22 @@ def extrapolate_to(snapshot: Snapshot, now_unix: float) -> Snapshot:
     return dataclasses.replace(snapshot, **changes)
 
 
-def session_timing(snapshot: Snapshot, *, now_unix: float) -> tuple[float | None, float | None]:
-    """Return ``(elapsed_s, remaining_s)`` for the whole session.
+def session_timing(snapshot: Snapshot | ProgressState, *, now_unix: float) -> tuple[float | None, float | None]:
+    """Return the producer's ``(elapsed_s, remaining_s)`` for the session.
 
     Args:
-        snapshot: Snapshot exposing ``start_ts`` and ``max_minutes``.
+        snapshot: Snapshot or progress view exposing the persisted charged
+            total, live-leg anchor, ``start_ts`` and ``max_minutes``.
         now_unix: Current time.
 
     Returns:
-        Elapsed seconds since ``start_ts`` (``None`` when unparseable) and
+        Seconds charged across all run legs (``None`` when undated) and
         seconds left against ``max_minutes`` (``None`` for an unbounded run).
+        Legacy states without charged clocks use their original ``start_ts``.
     """
-    from datetime import datetime, timezone
+    from hyperloom.orchestrator.phases.machine_state import session_elapsed_seconds, session_remaining_seconds
 
-    from hyperloom.orchestrator.phases.machine_state import session_remaining_seconds
-
-    remaining = session_remaining_seconds(snapshot, now_unix=now_unix)
-
-    elapsed: float | None = None
-    start_ts = str(snapshot.start_ts or "").strip()
-    if start_ts:
-        try:
-            start = datetime.fromisoformat(start_ts)
-            if start.tzinfo is None:
-                start = start.replace(tzinfo=timezone.utc)
-            elapsed = max(0.0, now_unix - start.timestamp())
-        except (TypeError, ValueError):
-            elapsed = None
-
+    view = snapshot if isinstance(snapshot, ProgressState) else ProgressState(snapshot, {})
+    elapsed = session_elapsed_seconds(view, now_unix=now_unix)
+    remaining = session_remaining_seconds(view, now_unix=now_unix)
     return elapsed, remaining

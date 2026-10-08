@@ -18,7 +18,7 @@ import os
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
-from hyperloom.common.coerce import to_float, to_int
+from hyperloom.common.coerce import to_float, to_int, to_unix
 from hyperloom.inference_optimizer.session.paths import (
     ENV_CURRENT_SESSION_DIR,
     find_latest_per_session_dir,
@@ -41,7 +41,7 @@ from .model import (
     SourceOutcome,
     TaskCounts,
 )
-from .progress import build_phase_progress, elapsed_totals_from_history, session_timing
+from .progress import ProgressState, build_phase_progress, elapsed_totals_from_history, session_timing
 from .sources import (
     ActivitySource,
     CoordinatorDbSource,
@@ -123,6 +123,7 @@ def _progress_clock(
     state_mtime_unix: float,
     liveness: Liveness,
     stop_reason: str | None,
+    ended_unix: float = 0.0,
 ) -> float:
     """Return the time that duration math should be measured against.
 
@@ -132,22 +133,25 @@ def _progress_clock(
     cosmetic problem: it makes budget percentages meaningless on exactly the
     artifacts operators inspect most, namely finished runs.
 
-    So when the run can no longer be making progress, the clock is pinned to
-    the last evidence we actually have — the final ``state.json`` write. The
-    reported duration then converges on the phase's true final length.
+    When the run can no longer be making progress, its recorded stop or leg-end
+    timestamp owns the clock. Older artifacts lacking that boundary use their
+    last recorded activity, with the file's write time only as a final fallback.
 
     A ``STALE`` session is deliberately *not* pinned: the process is still up
     and a growing "this phase has run for 3h" is the signal the operator wants.
 
     Args:
         now_unix: Wall-clock observation time.
-        state_mtime_unix: Last ``state.json`` write, or ``0.0`` when unknown.
+        state_mtime_unix: Last recorded activity, or file write when undated.
         liveness: Derived liveness.
         stop_reason: Session stop reason, when recorded.
+        ended_unix: Recorded session stop or run-leg end, when available.
 
     Returns:
         The timestamp to treat as "now" for duration math.
     """
+    if ended_unix > 0:
+        return min(now_unix, ended_unix)
     ended = bool(stop_reason) or liveness is Liveness.DEAD
     if ended and state_mtime_unix > 0:
         return min(now_unix, state_mtime_unix)
@@ -599,6 +603,8 @@ def load_snapshot(
         state_mtime_unix=_last_activity_unix(state, state_mtime_unix=state_mtime),
         liveness=liveness,
         stop_reason=result.stop_reason,
+        ended_unix=to_unix(state.get("leg_ended_ts") or (state.get("stop_ts") if result.stop_reason else ""), 0.0)
+        or 0.0,
     )
 
     base = Snapshot(
@@ -668,14 +674,13 @@ def load_snapshot(
     if extras:
         base = replace_derived(base, **extras)
 
-    # Phase progress needs the assembled snapshot as its "frozen state view",
-    # so it is derived in a second pass and folded in. Duration math uses
-    # ``progress_now`` (pinned to the last write for an ended run), not the
-    # observation time — see :func:`_progress_clock`.
-    elapsed_s, remaining_s = session_timing(base, now_unix=progress_now)
+    # Keep producer accounting fields in the scheduler view, not the renderer
+    # model. The progress clock is pinned for an ended run.
+    progress_state = ProgressState(base, state)
+    elapsed_s, remaining_s = session_timing(progress_state, now_unix=progress_now)
     return replace_derived(
         base,
-        phases=build_phase_progress(base, now_unix=progress_now),
+        phases=build_phase_progress(progress_state, now_unix=progress_now),
         session_elapsed_s=elapsed_s,
         session_remaining_s=remaining_s,
     )
