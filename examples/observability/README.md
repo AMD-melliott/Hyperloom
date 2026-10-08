@@ -24,7 +24,7 @@ Run it by hand against any session (for example a finished one):
 python -m hyperloom.observability.exporter --session-dir <session> --listen 127.0.0.1:9477
 ```
 
-## Running work
+## Running work and resumed clocks
 
 The dashboard shows running tasks by action (`kind`, such as `baseline`,
 `explore`, `roofline`, or `conc_sweep`):
@@ -42,6 +42,10 @@ Fresh task progress is positive liveness evidence while a long benchmark leaves
 `state.json` unchanged. Merely rereading the database, refreshing a lease, or
 keeping the optimizer PID alive does not prove progress. An old state with no
 fresh progress remains stale; inspect task elapsed and progress age together.
+
+Resumed phase and session clocks use the coordinator's charged execution legs,
+not the entire wall span from the original start. Previously charged time is
+counted once, and gaps while the optimizer was stopped are excluded.
 
 ## Local stack (Docker Compose)
 
