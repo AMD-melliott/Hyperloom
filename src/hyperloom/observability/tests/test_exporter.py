@@ -11,6 +11,7 @@ import json
 import os
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -27,7 +28,9 @@ from hyperloom.observability import exporter as exp, exporter_config
 from hyperloom.observability.collector import SessionMonitor
 from hyperloom.observability.sources.base import SourceResult
 
+from .conftest import FROZEN_NOW, write_coordinator_db, write_lock, write_state
 from .test_invariants import _tree_fingerprint
+from .test_render_prometheus import parse_exposition, value_of
 
 
 @contextmanager
@@ -73,6 +76,50 @@ def test_metrics_endpoint_serves_the_session(session_dir: Path, monkeypatch) -> 
         'hyperloom_source_up{session_id="test-model_20260806T000000Z_deadbeef",model="test-model",framework="sglang",source="inference_sd"} 1'
         in body
     )
+
+
+def test_running_task_progress_refreshes_live_http_metrics(tmp_path: Path) -> None:
+    sd = tmp_path / "http-long-task"
+    write_state(sd)
+    os.utime(sd / "state.json", (FROZEN_NOW - 10_000, FROZEN_NOW - 10_000))
+    write_lock(sd, pid=os.getpid(), hostname=socket.gethostname())
+    history = [{"from": "queued", "to": "running", "ts": "2026-08-06T02:00:00Z"}]
+    db = write_coordinator_db(
+        sd, tasks=[("opaque-task-id", "conc_sweep", "running")], task_history={"opaque-task-id": history}
+    )
+    now = [FROZEN_NOW]
+    monitor = SessionMonitor(sd, gpu=False, server=False, session_interval_s=0.1, clock=lambda: now[0])
+    with monitor, serving(exp.ExporterState(monitor=monitor, version="t")) as base:
+        status, _, body = get(f"{base}/metrics")
+        assert status == 200
+        _, samples = parse_exposition(body)
+        assert value_of(samples, "hyperloom_liveness", state="stale") == 1
+        assert value_of(samples, "hyperloom_running_tasks", kind="conc_sweep") == 1
+        assert value_of(samples, "hyperloom_running_task_elapsed_seconds", kind="conc_sweep") == 7200
+        assert "hyperloom_running_task_progress_age_seconds" not in body
+        history.append(
+            {"progress": {"unit": "baseline_round", "label": "private-candidate"}, "ts": "2026-08-06T03:59:55Z"}
+        )
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE tasks SET history=? WHERE task_id=?", (json.dumps(history), "opaque-task-id"))
+        now[0] += 1
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status, _, body = get(f"{base}/metrics")
+            _, samples = parse_exposition(body)
+            if value_of(samples, "hyperloom_liveness", state="live") == 1:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("exporter did not collect fresh task progress within five seconds")
+        assert status == 200
+        assert value_of(samples, "hyperloom_state_age_seconds") >= 3600
+        assert value_of(samples, "hyperloom_last_activity_age_seconds") == 6
+        assert value_of(samples, "hyperloom_running_task_progress_age_seconds", kind="conc_sweep") == 6
+        assert value_of(samples, "hyperloom_running_task_elapsed_seconds", kind="conc_sweep") == 7201
+        assert "opaque-task-id" not in body and "private-candidate" not in body
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT updated_at FROM tasks").fetchone()[0] == "2026-08-06T03:00:00+00:00"
 
 
 def test_healthz_and_unknown_path(session_dir: Path, monkeypatch) -> None:

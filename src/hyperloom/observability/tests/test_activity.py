@@ -15,13 +15,14 @@ Heartbeat inside a run with ``*_done.json``             ``task_terminal`` flagge
 ``__pycache__`` / ``.git`` / ``*.pyc``                  Pruned from the walk
 Walk budget exhausted                                   ``truncated`` set, warning raised
 No walkable subtrees                                    ``ABSENT``, not ``ERROR``
-Container pid absent + fresh activity                   LIVE/STALE, never DEAD
+Container pid absent + fresh activity                   LIVE, independent of state age
 Container pid absent + no activity at all               DEAD stays reachable
 ======================================================= ===================================
 """
 
 from __future__ import annotations
 
+import os
 import socket
 from pathlib import Path
 
@@ -191,6 +192,7 @@ def test_container_pid_with_fresh_activity_is_never_dead(tmp_path: Path, frozen_
     """
     sd = tmp_path / "s"
     write_state(sd, phase="KERNEL_AGENT", stop_reason="")
+    os.utime(sd / "state.json", (FROZEN_NOW - 10_000, FROZEN_NOW - 10_000))
     # A pid that does not exist on this host, with a matching hostname.
     write_lock(sd, pid=999_999_998, hostname=socket.gethostname())
     write_activity(sd, "geak/e2e_cycle0/verify/driver.log", age_s=4.0)
@@ -198,7 +200,7 @@ def test_container_pid_with_fresh_activity_is_never_dead(tmp_path: Path, frozen_
     snapshot = load_snapshot(sd, now_unix=frozen_clock)
 
     assert snapshot is not None
-    assert snapshot.liveness is not Liveness.DEAD
+    assert snapshot.liveness is Liveness.LIVE
     assert snapshot.last_activity_age_s == 4.0
     # And the clock is not pinned, so the running phase reports real elapsed.
     current = snapshot.current_phase_progress

@@ -38,6 +38,11 @@ The dashboard shows running tasks by action (`kind`, such as `baseline`,
 Task IDs and progress messages are not metric labels. Unknown action kinds are
 aggregated as `other`, so repeated tasks do not create new series.
 
+Fresh task progress is positive liveness evidence while a long benchmark leaves
+`state.json` unchanged. Merely rereading the database, refreshing a lease, or
+keeping the optimizer PID alive does not prove progress. An old state with no
+fresh progress remains stale; inspect task elapsed and progress age together.
+
 ## Local stack (Docker Compose)
 
 ```bash

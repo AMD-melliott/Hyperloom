@@ -240,8 +240,8 @@ def _derive_liveness(
     Args:
         lock: Payload from :class:`~.sources.LockFileSource`, or ``None``.
         state_age_s: Age of ``state.json``, or ``None``.
-        activity_age_s: Age of the freshest write anywhere in the session tree,
-            or ``None`` when the activity source could not read one.
+        activity_age_s: Age of the freshest session-tree write or timestamped
+            running-task progress note; ``None`` when neither is available.
         now_unix: Current time.
         stale_after_s: Age past which corroborating evidence is not fresh.
         stop_reason: Recorded session stop reason, when any.
@@ -256,20 +256,21 @@ def _derive_liveness(
 
     activity_fresh = activity_age_s is not None and activity_age_s <= stale_after_s
     state_fresh = state_age_s is not None and state_age_s <= stale_after_s
+    # Files and progress notes do not write themselves. A long dispatch leaves
+    # state.json untouched for its whole length, so fresh work is LIVE whatever
+    # the lock or the loop's last tick say; STALE is reserved for an owner that
+    # claims life while nothing in the session moves.
+    if activity_fresh:
+        return Liveness.LIVE
 
     if not lock:
-        # No lock to interrogate, but something is writing. Files do not write
-        # themselves; that is enough to say the run is alive.
-        return Liveness.STALE if activity_fresh else Liveness.UNKNOWN
+        return Liveness.UNKNOWN
 
     pid_alive = lock.get("pid_alive")
     hb_age = heartbeat_age_s(lock, now_unix=now_unix)
     claims_alive = bool(pid_alive) or (hb_age is not None and hb_age <= LIVE_HEARTBEAT_S)
 
-    if claims_alive or activity_fresh:
-        # Fresh state.json means the loop is publishing. Fresh activity without
-        # it means a long blocking dispatch is in flight — the run is working,
-        # just not ticking, which is STALE rather than LIVE.
+    if claims_alive:
         return Liveness.LIVE if state_fresh else Liveness.STALE
 
     if lock.get("same_host") and pid_alive is False:
@@ -481,7 +482,7 @@ def load_snapshot(
         model: Optional model basename to narrow auto-resolution.
         now_unix: Clock override. Injecting one makes every derived value
             deterministic, which is how the tests avoid patching ``time``.
-        stale_after_s: ``state.json`` age past which a live owner reads STALE.
+        stale_after_s: Age beyond which state and positive activity evidence are stale.
         lifecycle_limit: Number of trailing lifecycle events to carry.
         activity: Read sub-phase activity (run heartbeats, recent writes, GEAK
             progress). Disable for the cheapest possible read.
@@ -589,6 +590,13 @@ def load_snapshot(
     db_data: dict[str, Any] = db_res.data if db_res.ok else {}
     counts_raw: dict[str, int] = db_data.get("task_counts", {}) or {}
     task_summaries = tuple(db_data.get("running_task_summaries", ()))
+    task_progress_ages = [
+        max(0.0, now - summary.latest_progress_unix)
+        for summary in task_summaries
+        if summary.latest_progress_unix is not None
+    ]
+    if task_progress_ages:
+        last_activity_age = min(task_progress_ages + ([last_activity_age] if last_activity_age is not None else []))
 
     result = _build_result(state)
     liveness = _derive_liveness(

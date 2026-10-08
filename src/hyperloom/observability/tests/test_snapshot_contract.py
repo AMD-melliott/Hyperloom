@@ -30,7 +30,9 @@ Expired lane lease                          not counted as holding the lane
 from __future__ import annotations
 
 import json
+import os
 import socket
+import sqlite3
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +42,8 @@ import pytest
 
 from hyperloom.observability import Freshness, Liveness, load_snapshot
 from hyperloom.observability.assemble import parse_hf_cache_path
+from hyperloom.observability.render.json_out import render_json
+from hyperloom.observability.render.prometheus import ExporterInfo, render_prometheus
 
 from .conftest import (
     FROZEN_NOW,
@@ -442,6 +446,103 @@ def test_task_counts_and_running_tasks(session_dir: Path, frozen_clock) -> None:
     assert snapshot.tasks.failed == 1
     assert snapshot.tasks.total == 4
     assert [task.kind for task in snapshot.running_tasks] == ["explore"]
+
+
+@pytest.mark.parametrize("kind", ["baseline", "explore", "roofline", "conc_sweep"])
+def test_long_task_progress_is_live_despite_stale_state(tmp_path: Path, kind: str) -> None:
+    sd = tmp_path / kind
+    write_state(sd)
+    os.utime(sd / "state.json", (FROZEN_NOW - 10_000, FROZEN_NOW - 10_000))
+    write_lock(sd, pid=1, hostname=socket.gethostname())
+    history = [
+        {"from": "queued", "to": "running", "ts": "2026-08-06T02:00:00Z"},
+        {"progress": {"unit": "benchmark", "label": "candidate-not-a-metric-label"}, "ts": "2026-08-06T03:59:55Z"},
+    ]
+    write_coordinator_db(sd, tasks=[("task-opaque", kind, "running")], task_history={"task-opaque": history})
+    snapshot = load_snapshot(sd, now_unix=lambda: FROZEN_NOW, activity=False)
+    assert snapshot is not None
+    assert snapshot.freshness is Freshness.STALE
+    assert snapshot.liveness is Liveness.LIVE
+    assert snapshot.last_activity_age_s == 5
+    task = snapshot.running_tasks[0]
+    assert task.updated_at == "2026-08-06T03:00:00+00:00"
+    assert task.started_at == "2026-08-06T02:00:00Z"
+    assert task.progress_at == "2026-08-06T03:59:55Z"
+    payload = json.loads(render_json(snapshot))
+    assert payload["resources"]["running_tasks"][0]["progress_at"] == task.progress_at
+    text = render_prometheus(snapshot, exporter=ExporterInfo(version="t"))
+    assert 'state="live"} 1' in text
+    assert f'kind="{kind}"}} 7200' in text
+    assert f'kind="{kind}"}} 5' in text
+    assert "task-opaque" not in text and "candidate-not-a-metric-label" not in text
+    later = load_snapshot(sd, now_unix=lambda: FROZEN_NOW + 1000, activity=False)
+    assert later is not None
+    assert later.liveness is Liveness.STALE
+    assert later.last_activity_age_s == 1005
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        [],
+        [{"progress": {"unit": "benchmark"}}],
+        [{"progress": {}, "ts": "not-a-timestamp"}],
+        [{"progress": {}, "ts": "2026-08-06T03:00:00Z"}],
+    ],
+)
+def test_fresh_database_writes_do_not_hide_stuck_tasks(tmp_path: Path, history: list[dict]) -> None:
+    sd = tmp_path / "stuck"
+    write_state(sd)
+    os.utime(sd / "state.json", (FROZEN_NOW - 10_000, FROZEN_NOW - 10_000))
+    write_lock(sd, pid=1, hostname=socket.gethostname())
+    db = write_coordinator_db(sd, tasks=[("stuck-task", "conc_sweep", "running")], task_history={"stuck-task": history})
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE tasks SET updated_at = '2026-08-06T04:00:00Z'")
+    snapshot = load_snapshot(sd, now_unix=lambda: FROZEN_NOW)
+    assert snapshot is not None
+    assert snapshot.liveness is Liveness.STALE
+    assert snapshot.freshness is Freshness.STALE
+    assert snapshot.last_activity_age_s is None or snapshot.last_activity_age_s >= 3600
+
+
+@pytest.mark.parametrize("state", ["running", "succeeded"])
+def test_task_progress_never_revives_a_terminal_session(tmp_path: Path, state: str) -> None:
+    sd = tmp_path / state
+    write_state(sd, stop_reason="time_exhausted" if state == "running" else "")
+    os.utime(sd / "state.json", (FROZEN_NOW - 10_000, FROZEN_NOW - 10_000))
+    write_lock(sd, pid=999_999_998, hostname=socket.gethostname())
+    write_coordinator_db(
+        sd,
+        tasks=[("task", "baseline", state)],
+        task_history={"task": [{"progress": {"unit": "benchmark"}, "ts": "2026-08-06T03:59:59Z"}]},
+    )
+    snapshot = load_snapshot(sd, now_unix=lambda: FROZEN_NOW)
+    assert snapshot is not None
+    assert snapshot.liveness is Liveness.DEAD
+
+
+def test_task_reentry_resets_old_progress(tmp_path: Path) -> None:
+    sd = tmp_path / "resumed-task"
+    write_state(sd)
+    os.utime(sd / "state.json", (FROZEN_NOW - 10_000, FROZEN_NOW - 10_000))
+    write_lock(sd, pid=1, hostname=socket.gethostname())
+    write_coordinator_db(
+        sd,
+        tasks=[("task", "roofline", "running")],
+        task_history={
+            "task": [
+                {"to": "running", "ts": "2026-08-06T01:00:00Z"},
+                {"progress": {}, "ts": "2026-08-06T03:59:59Z"},
+                {"to": "queued", "ts": "2026-08-06T02:00:00Z"},
+                {"to": "running", "ts": "2026-08-06T03:00:00Z"},
+            ]
+        },
+    )
+    snapshot = load_snapshot(sd, now_unix=lambda: FROZEN_NOW)
+    assert snapshot is not None
+    assert snapshot.liveness is Liveness.STALE
+    assert snapshot.running_tasks[0].started_at == "2026-08-06T03:00:00Z"
+    assert snapshot.running_tasks[0].progress_at is None
 
 
 # --- identity join ------------------------------------------------------------
