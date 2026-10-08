@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from hyperloom.observability import load_snapshot
-from hyperloom.observability.model import CurrentStep, Liveness, SourceHealth, SourceOutcome
+from hyperloom.observability.model import CurrentStep, Liveness, OptimizationRecord, SourceHealth, SourceOutcome
 from hyperloom.observability.render import prometheus as prom
 from hyperloom.observability.render.prometheus import (
     ExporterInfo,
@@ -93,6 +93,11 @@ PINNED_METRIC_NAMES = frozenset(
         "hyperloom_target_gap_percent",
         "hyperloom_crashes",
         "hyperloom_stop_info",
+        "hyperloom_accuracy",
+        "hyperloom_optimization_info",
+        "hyperloom_optimization_throughput",
+        "hyperloom_optimization_gain_percent",
+        "hyperloom_optimization_accuracy",
         "hyperloom_exporter_build_info",
         "hyperloom_exporter_parent_alive",
         "hyperloom_exporter_render_errors_total",
@@ -124,6 +129,10 @@ ALLOWED_LABELS = frozenset(
         "step",
         "kind",
         "reason",
+        "ordinal",
+        "lever",
+        "outcome",
+        "stage",
         "source",
         "version",
     }
@@ -195,7 +204,22 @@ def full_snapshot(snapshot):
             started_unix=1785988000.0,
             deadline_unix=1786019000.0,
         ),
-        result=dataclasses.replace(snapshot.result, stop_reason="time_exhausted"),
+        result=dataclasses.replace(
+            snapshot.result, stop_reason="time_exhausted", baseline_accuracy=0.975, best_accuracy=0.9727
+        ),
+        optimizations=(
+            OptimizationRecord(
+                ordinal=4,
+                phase="PRELUDE",
+                kind="other",
+                lever="warm_replay(exact): --gpu-memory-utilization 0.85",
+                outcome="KEEP",
+                gain_pct=52.384,
+                tput=774.5,
+                accuracy=0.9727,
+            ),
+            OptimizationRecord(ordinal=5, phase="PRELUDE", kind="other", lever="roofline", outcome="REVERT"),
+        ),
         source_health=(
             SourceHealth(name="session", outcome=SourceOutcome.OK, age_s=1.5, duration_s=0.02),
             SourceHealth(
@@ -254,6 +278,23 @@ def test_stop_info_carries_the_reason(full_snapshot) -> None:
     assert value_of(samples, "hyperloom_stop_info", reason="time_exhausted") == 1
 
 
+def test_accuracy_is_labelled_by_stage(full_snapshot) -> None:
+    _, samples = parse_exposition(render_prometheus(full_snapshot, exporter=EXPORTER))
+    assert value_of(samples, "hyperloom_accuracy", stage="baseline") == 0.975
+    assert value_of(samples, "hyperloom_accuracy", stage="best") == 0.9727
+
+
+def test_optimizations_join_values_by_ordinal_and_omit_the_unmeasured(full_snapshot) -> None:
+    _, samples = parse_exposition(render_prometheus(full_snapshot, exporter=EXPORTER))
+    assert value_of(samples, "hyperloom_optimization_info", ordinal="4", outcome="KEEP") == 1
+    assert value_of(samples, "hyperloom_optimization_info", ordinal="5", outcome="REVERT") == 1
+    assert value_of(samples, "hyperloom_optimization_throughput", ordinal="4") == 774.5
+    assert value_of(samples, "hyperloom_optimization_gain_percent", ordinal="4") == 52.384
+    assert value_of(samples, "hyperloom_optimization_accuracy", ordinal="4") == 0.9727
+    unmeasured = [n for n, lab, _ in samples if lab.get("ordinal") == "5" and n != "hyperloom_optimization_info"]
+    assert unmeasured == []
+
+
 def test_none_is_omitted_not_zeroed(snapshot) -> None:
     _, samples = parse_exposition(render_prometheus(snapshot, exporter=ExporterInfo(version="1")))
     budget_phases = {lab["phase"] for n, lab, _ in samples if n == "hyperloom_phase_budget_seconds"}
@@ -262,6 +303,8 @@ def test_none_is_omitted_not_zeroed(snapshot) -> None:
     assert "hyperloom_last_activity_age_seconds" not in names_of(samples)
     assert "hyperloom_current_step_info" not in names_of(samples)
     assert "hyperloom_stop_info" not in names_of(samples)
+    assert "hyperloom_accuracy" not in names_of(samples)
+    assert "hyperloom_optimization_info" not in names_of(samples)
     assert "hyperloom_exporter_parent_alive" not in names_of(samples)
 
 

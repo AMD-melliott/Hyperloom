@@ -32,6 +32,7 @@ from .model import (
     LaneOccupancy,
     LifecycleEvent,
     Liveness,
+    OptimizationRecord,
     ResultSummary,
     RunningTask,
     RunningWork,
@@ -47,6 +48,7 @@ from .sources import (
     CoordinatorDbSource,
     CurrentStepSource,
     GeakSource,
+    JournalSource,
     LockFileSource,
     ManifestSource,
     StateFileSource,
@@ -403,6 +405,7 @@ def _build_session_info(session_dir: Path, manifest: dict[str, Any], state: dict
 def _build_result(state: dict[str, Any]) -> ResultSummary:
     """Extract the optimization outcome so far from ``state.json``."""
     best = state.get("current_best") if isinstance(state.get("current_best"), dict) else {}
+    stack = _optimization_stack(state)
     return ResultSummary(
         baseline_tput=to_float(state.get("baseline_tput")),
         best_tput=to_float(best.get("tput")) if best else None,
@@ -410,9 +413,59 @@ def _build_result(state: dict[str, Any]) -> ResultSummary:
         cumulative_gain_pct=to_float(state.get("cumulative_gain")),
         cumulative_gain_validated_pct=to_float(state.get("cumulative_gain_validated")),
         target_gap_pct=to_float(state.get("target_gap_pct")),
+        baseline_accuracy=to_float(state.get("baseline_accuracy")),
+        best_accuracy=to_float(stack[-1].get("accuracy")) if stack else None,
         stop_reason=(state.get("stop_reason") or None),
         crash_count=to_int(state.get("crash_count"), 0) or 0,
     )
+
+
+def _optimization_stack(state: dict[str, Any]) -> list[dict[str, Any]]:
+    stack = state.get("optimization_stack")
+    return [entry for entry in stack if isinstance(entry, dict)] if isinstance(stack, list) else []
+
+
+#: Journal rows exported per scrape. The journal is append-only, so the newest
+#: rows are kept; a long run must not grow the series count without bound.
+MAX_OPTIMIZATION_ROWS = 100
+
+#: Longest ``lever`` label; warm-replay levers embed the full server-arg string.
+MAX_LEVER_LABEL_CHARS = 160
+
+
+def _build_optimizations(rows: list[dict[str, Any]], state: dict[str, Any]) -> tuple[OptimizationRecord, ...]:
+    """Select the journal decisions worth showing and join accuracy from the adopted stack.
+
+    Baseline rows are excluded (they are the reference, exported as
+    ``throughput_baseline``). A KEEP with no measurement is bookkeeping, such as
+    target analysis or a specialist round; a REVERT is kept even unmeasured
+    because "tried and failed" is the point of the table.
+    """
+    accuracy_by_task = {
+        str(entry.get("task_id")): to_float(entry.get("accuracy")) for entry in _optimization_stack(state)
+    }
+    records: list[OptimizationRecord] = []
+    for ordinal, row in enumerate(rows):
+        outcome = str(row.get("outcome") or "")
+        gain = to_float(row.get("gain_pct"))
+        tput = to_float(row.get("throughput_after"))
+        if row.get("kind") == "baseline" or outcome not in ("KEEP", "REVERT"):
+            continue
+        if outcome == "KEEP" and gain is None and tput is None:
+            continue
+        records.append(
+            OptimizationRecord(
+                ordinal=ordinal,
+                phase=str(row.get("phase") or ""),
+                kind=str(row.get("kind") or ""),
+                lever=str(row.get("change") or "")[:MAX_LEVER_LABEL_CHARS],
+                outcome=outcome,
+                gain_pct=gain,
+                tput=tput,
+                accuracy=accuracy_by_task.get(str(row.get("task_id"))),
+            )
+        )
+    return tuple(records[-MAX_OPTIMIZATION_ROWS:])
 
 
 def _build_source_health(reads: list[tuple[str, Any]], *, now_unix: float) -> tuple[SourceHealth, ...]:
@@ -512,12 +565,14 @@ def load_snapshot(
     state_src, manifest_src, lock_src = StateFileSource(), ManifestSource(), LockFileSource()
     db_src = CoordinatorDbSource()
     step_src = CurrentStepSource()
+    journal_src = JournalSource()
 
     state_res = state_src.read(resolved)
     manifest_res = manifest_src.read(resolved)
     lock_res = lock_src.read(resolved)
     db_res = db_src.read(resolved, now_unix=now)
     step_res = step_src.read(resolved)
+    journal_res = journal_src.read(resolved)
 
     reads = [
         (state_src.name, state_res),
@@ -525,6 +580,7 @@ def load_snapshot(
         (lock_src.name, lock_res),
         (db_src.name, db_res),
         (step_src.name, step_res),
+        (journal_src.name, journal_res),
     ]
 
     activity_res = None
@@ -672,6 +728,7 @@ def load_snapshot(
         ),
         running_task_summaries=task_summaries,
         result=result,
+        optimizations=_build_optimizations(journal_res.data if journal_res.ok else [], state),
         lifecycle=_build_lifecycle(state, limit=lifecycle_limit),
         current_action=(state.get("current_action") or None),
         current_step=(step_res.data if step_res.ok else None),

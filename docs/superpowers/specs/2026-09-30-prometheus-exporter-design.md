@@ -140,6 +140,16 @@ is not exported.
 | `hyperloom_target_gap_percent` | gauge | — | `target_gap_pct` |
 | `hyperloom_crashes` | gauge | — | `crash_count` |
 | `hyperloom_stop_info` | gauge (=1) | `reason` | `stop_reason`, only once set |
+| `hyperloom_accuracy` | gauge | `stage` = baseline/best | `baseline_accuracy`, accuracy of the last adopted stack entry |
+| `hyperloom_optimization_info` | gauge (=1) | `ordinal`, `phase`, `kind`, `lever`, `outcome` | one row per journal KEEP (measured) or REVERT, newest 100 |
+| `hyperloom_optimization_throughput` | gauge | `ordinal` | journal `throughput_after` |
+| `hyperloom_optimization_gain_percent` | gauge | `ordinal` | journal `gain_pct` |
+| `hyperloom_optimization_accuracy` | gauge | `ordinal` | `optimization_stack[].accuracy`, joined by task |
+
+The optimization rows come from `reports/optimization_journal.json`, the only
+artifact that records reverted attempts. `ordinal` is the row's journal position,
+so the value gauges join to `hyperloom_optimization_info` on it. Accuracy is only
+known for adopted attempts. `lever` is truncated to 160 characters.
 
 Throughput values are exported in the session's own graded unit, unconverted.
 `hyperloom_crashes` is a gauge, not a counter, because it is read from persisted

@@ -15,6 +15,7 @@ from .coordinator_db import CoordinatorDbSource
 from .current_step import CurrentStepSource
 from .geak import GeakSource, describe as describe_geak
 from .gpu import GpuSource, resolve_amd_smi
+from .journal import JournalSource
 from .lockfile import LockFileSource, heartbeat_age_s, pid_alive
 from .manifest import ManifestSource
 from .server import ServerMetricsSource
@@ -27,6 +28,7 @@ __all__ = [
     "CurrentStepSource",
     "GeakSource",
     "GpuSource",
+    "JournalSource",
     "LockFileSource",
     "ManifestSource",
     "ServerMetricsSource",

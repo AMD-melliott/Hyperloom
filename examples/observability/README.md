@@ -35,6 +35,15 @@ The dashboard shows running tasks by action (`kind`, such as `baseline`,
 | `hyperloom_running_task_elapsed_seconds{kind="…"}` | Age of the oldest running task for that action |
 | `hyperloom_running_task_progress_age_seconds{kind="…"}` | Age of the freshest timestamped progress for running tasks of that action; absent until progress is published |
 
+What Hyperloom found is exported per attempt from the optimization journal:
+
+| Metric | Meaning |
+|---|---|
+| `hyperloom_optimization_info{ordinal,phase,kind,lever,outcome}` | One row per measured KEEP or any REVERT (newest 100), value 1 |
+| `hyperloom_optimization_throughput{ordinal}` / `…_gain_percent{ordinal}` | Measured throughput and gain for that attempt, when measured |
+| `hyperloom_optimization_accuracy{ordinal}` | Accuracy-eval score of an adopted attempt |
+| `hyperloom_accuracy{stage="baseline\|best"}` | Accuracy of the baseline and of the best adopted stack |
+
 Task IDs and progress messages are not metric labels. Unknown action kinds are
 aggregated as `other`, so repeated tasks do not create new series.
 

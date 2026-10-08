@@ -302,8 +302,29 @@ class ResultSummary:
     cumulative_gain_pct: float | None = None
     cumulative_gain_validated_pct: float | None = None
     target_gap_pct: float | None = None
+    baseline_accuracy: float | None = None
+    best_accuracy: float | None = None
     stop_reason: str | None = None
     crash_count: int = 0
+
+
+@dataclass(frozen=True)
+class OptimizationRecord:
+    """One decided optimization attempt from the journal: what was tried and whether it stuck.
+
+    ``ordinal`` is the row's position in the append-only journal, so it is a
+    stable join key across scrapes. ``accuracy`` is only known for adopted
+    attempts, which is where ``state.json`` records it.
+    """
+
+    ordinal: int
+    phase: str
+    kind: str
+    lever: str
+    outcome: str
+    gain_pct: float | None = None
+    tput: float | None = None
+    accuracy: float | None = None
 
 
 @dataclass(frozen=True)
@@ -557,6 +578,7 @@ class Snapshot:
     running_tasks: tuple[RunningTask, ...] = ()
     running_task_summaries: tuple[RunningTaskSummary, ...] = ()
     result: ResultSummary = field(default_factory=ResultSummary)
+    optimizations: tuple[OptimizationRecord, ...] = ()
     lifecycle: tuple[LifecycleEvent, ...] = ()
     current_action: str | None = None
 

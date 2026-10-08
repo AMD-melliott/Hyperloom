@@ -133,6 +133,15 @@ def write_manifest(session_dir: Path, **overrides) -> Path:
     return path
 
 
+def write_journal(session_dir: Path, entries: list[dict] | str) -> Path:
+    """Write ``reports/optimization_journal.json``; a ``str`` is written verbatim (for corrupt-file cases)."""
+    reports = session_dir / "reports"
+    reports.mkdir(parents=True, exist_ok=True)
+    path = reports / "optimization_journal.json"
+    path.write_text(entries if isinstance(entries, str) else json.dumps({"entries": entries}), encoding="utf-8")
+    return path
+
+
 def write_lock(
     session_dir: Path,
     *,

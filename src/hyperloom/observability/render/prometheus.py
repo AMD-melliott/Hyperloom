@@ -220,7 +220,23 @@ def _result_families(s: Snapshot) -> list[MetricFamily]:
     stop = _gauge("hyperloom_stop_info", "Why the session stopped; present only once it has.")
     if result.stop_reason:
         stop.add(1, reason=result.stop_reason)
-    return [baseline, best, gain, gap, crashes, stop]
+    accuracy = _gauge("hyperloom_accuracy", "Accuracy-eval score of the baseline and of the best adopted stack.")
+    accuracy.add(result.baseline_accuracy, stage="baseline")
+    accuracy.add(result.best_accuracy, stage="best")
+    return [baseline, best, gain, gap, crashes, stop, accuracy]
+
+
+def _optimization_families(s: Snapshot) -> list[MetricFamily]:
+    info = _gauge("hyperloom_optimization_info", "One decided optimization attempt, labelled by lever and outcome.")
+    tput = _gauge("hyperloom_optimization_throughput", "Throughput measured for an attempt, by ordinal.")
+    gain = _gauge("hyperloom_optimization_gain_percent", "Gain over baseline measured for an attempt, by ordinal.")
+    accuracy = _gauge("hyperloom_optimization_accuracy", "Accuracy-eval score of an adopted attempt, by ordinal.")
+    for row in s.optimizations:
+        info.add(1, ordinal=row.ordinal, phase=row.phase, kind=row.kind, lever=row.lever, outcome=row.outcome)
+        tput.add(row.tput, ordinal=row.ordinal)
+        gain.add(row.gain_pct, ordinal=row.ordinal)
+        accuracy.add(row.accuracy, ordinal=row.ordinal)
+    return [info, tput, gain, accuracy]
 
 
 def _source_families(s: Snapshot) -> list[MetricFamily]:
@@ -243,6 +259,7 @@ _SNAPSHOT_BUILDERS: tuple[tuple[str, Callable[[Snapshot], list[MetricFamily]]], 
     ("work", _work_families),
     ("step", _step_families),
     ("result", _result_families),
+    ("optimizations", _optimization_families),
     ("sources", _source_families),
 )
 
