@@ -698,6 +698,29 @@ def session_remaining_seconds(
     mm = _max_minutes(state)
     if mm <= 0:
         return None
+    elapsed = session_elapsed_seconds(state, now_unix=now_unix)
+    if elapsed is None:
+        return None
+    return max(0.0, mm * 60.0 - elapsed)
+
+
+def session_elapsed_seconds(state: Any, *, now_unix: float | None = None) -> float | None:
+    """Wall-clock seconds the session has consumed, summed over every run leg.
+
+    The charged total plus whatever the live leg has run since its anchor. An
+    unarmed anchor means no leg is charging, so the charged total stands alone;
+    a state that never charged is measured from ``start_ts``.
+
+    Args:
+        state (Any): SharedState or a view exposing ``elapsed_charged_sec``,
+            ``leg_anchor_unix`` and ``start_ts``.
+        now_unix (float | None): Override for the current time.
+
+    Returns:
+        float | None: Non-negative seconds consumed, or ``None`` when nothing on
+        the state dates the session -- no charge, no anchor, no parseable
+        ``start_ts`` -- or the clock fields are malformed.
+    """
     try:
         charged = max(0.0, float(getattr(state, "elapsed_charged_sec", 0.0) or 0.0))
         anchor = float(getattr(state, "leg_anchor_unix", 0.0) or 0.0)
@@ -705,13 +728,13 @@ def session_remaining_seconds(
         return None
     now = float(now_unix) if now_unix is not None else time.time()
     if anchor > 0.0:
-        return max(0.0, mm * 60.0 - (charged + max(0.0, now - anchor)))
+        return charged + max(0.0, now - anchor)
     if charged > 0.0:
-        return max(0.0, mm * 60.0 - charged)
+        return charged
     started = to_unix(str(getattr(state, "start_ts", "") or "").strip())
     if started is None:
         return None
-    return max(0.0, mm * 60.0 - max(0.0, now - started))
+    return max(0.0, now - started)
 
 
 def phase_status_summary(
@@ -2622,6 +2645,7 @@ __all__ = [
     "phase_elapsed_totals_from_history",
     "phase_index",
     "phase_status_summary",
+    "session_elapsed_seconds",
     "session_remaining_seconds",
     "warm_replay_in_flight",
 ]

@@ -2508,19 +2508,12 @@ class SharedState(_RenderMixin, GapsStateMixin, _PhaseStateMixin):
         Returns:
             float: Minutes consumed; never negative.
         """
-        charged = max(0.0, self.elapsed_charged_sec)
-        anchor = self.leg_anchor_unix
+        from ..phases.machine_state import session_elapsed_seconds
+
         now_dt = now or datetime.now(timezone.utc)
         if now_dt.tzinfo is None:
             now_dt = now_dt.replace(tzinfo=timezone.utc)
-        if anchor > 0.0:
-            return (charged + max(0.0, now_dt.timestamp() - anchor)) / 60.0
-        if charged > 0.0:
-            return charged / 60.0
-        started = to_unix(self.start_ts.strip())
-        if started is None:
-            return 0.0
-        return max(0.0, now_dt.timestamp() - started) / 60.0
+        return (session_elapsed_seconds(self, now_unix=now_dt.timestamp()) or 0.0) / 60.0
 
     def extend_budget_minutes(self, minutes: float, *, reason: str = "") -> float:
         """Grant more wall-clock budget to this session, on the record.
