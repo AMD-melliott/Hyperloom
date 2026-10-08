@@ -274,7 +274,7 @@ def render_prometheus(
         for name, build in _SNAPSHOT_BUILDERS:
             try:
                 families.extend(build(snapshot))
-            except Exception:  # noqa: BLE001 - one broken family must not blank the whole page
+            except Exception:  # one broken family must not blank the whole page
                 log.warning("prometheus: rendering the %s family failed", name, exc_info=True)
                 failed += 1
                 if on_family_error is not None:

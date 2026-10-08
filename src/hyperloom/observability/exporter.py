@@ -140,7 +140,7 @@ def make_server(state: ExporterState, host: str, port: int) -> ExporterHTTPServe
             render, content_type = route
             try:
                 body = render().encode("utf-8")
-            except Exception:  # noqa: BLE001 - a failed request must not take the server down
+            except Exception:  # a failed request must not take the server down
                 log.warning("exporter: rendering %s failed", path, exc_info=True)
                 self.send_error(500)
                 return

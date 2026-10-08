@@ -958,7 +958,7 @@ class Coordinator(
                 if on_tick is not None:
                     try:
                         on_tick()
-                    except Exception:  # noqa: BLE001 - telemetry must never stop a run
+                    except Exception:  # telemetry must never stop a run
                         log.debug("Coordinator: on_tick callback failed", exc_info=True)
 
                 # Brief wait between ticks to avoid CPU spin while staying signal-responsive; 0.0 keeps tests fast.

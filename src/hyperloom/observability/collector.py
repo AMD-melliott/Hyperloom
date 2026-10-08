@@ -344,7 +344,7 @@ class Collector:
         started = time.monotonic()
         try:
             result = registration.fn()
-        except Exception as exc:  # noqa: BLE001 - a source must never take the collector down
+        except Exception as exc:  # a source must never take the collector down
             log.debug("collector: %s raised", registration.name, exc_info=True)
             result = SourceResult.error(f"{type(exc).__name__}: {exc}")
         duration = time.monotonic() - started
