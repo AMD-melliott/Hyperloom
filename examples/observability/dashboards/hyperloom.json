@@ -134,6 +134,28 @@
         {"refId": "A", "expr": "hyperloom_exporter_parent_alive{session_id=\"$session\"}", "legendFormat": "optimizer alive"},
         {"refId": "B", "expr": "hyperloom_state_age_seconds{session_id=\"$session\"}", "legendFormat": "state.json age (s)"}
       ]
+    },
+    {
+      "id": 14, "type": "stat", "title": "Running tasks",
+      "gridPos": {"x": 0, "y": 33, "w": 8, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "options": {"textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"refId": "A", "expr": "hyperloom_running_tasks{session_id=\"$session\"} > 0", "legendFormat": "{{kind}}", "instant": true}]
+    },
+    {
+      "id": 15, "type": "stat", "title": "Running task elapsed",
+      "gridPos": {"x": 8, "y": 33, "w": 8, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "targets": [{"refId": "A", "expr": "hyperloom_running_task_elapsed_seconds{session_id=\"$session\"}", "legendFormat": "{{kind}}", "instant": true}]
+    },
+    {
+      "id": 16, "type": "stat", "title": "Time since task progress",
+      "description": "Fresh timestamped task progress, not database writes or lease refreshes. Absence means no progress timestamp was published.",
+      "gridPos": {"x": 16, "y": 33, "w": 8, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "targets": [{"refId": "A", "expr": "hyperloom_running_task_progress_age_seconds{session_id=\"$session\"}", "legendFormat": "{{kind}}", "instant": true}]
     }
   ]
 }

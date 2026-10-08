@@ -53,6 +53,8 @@ class Liveness(Enum):
     ``UNKNOWN`` is a real answer and must never be rendered as ``LIVE``. The
     session lock file is never unlinked, so its presence proves only that a run
     once started here.
+    Fresh session activity or task progress is ``LIVE`` even while state.json
+    is stale; ``STALE`` means an owner claims life without fresh progress.
     """
 
     LIVE = "live"
@@ -271,6 +273,18 @@ class RunningTask:
     kind: str
     state: str
     updated_at: str | None = None
+    started_at: str | None = None
+    progress_at: str | None = None
+
+
+@dataclass(frozen=True)
+class RunningTaskSummary:
+    """All running tasks of one bounded action kind, independent of display limits."""
+
+    kind: str
+    count: int = 0
+    oldest_started_unix: float | None = None
+    latest_progress_unix: float | None = None
 
 
 @dataclass(frozen=True)
@@ -541,6 +555,7 @@ class Snapshot:
     gpu_leases: tuple[GpuLease, ...] = ()
     tasks: TaskCounts = field(default_factory=TaskCounts)
     running_tasks: tuple[RunningTask, ...] = ()
+    running_task_summaries: tuple[RunningTaskSummary, ...] = ()
     result: ResultSummary = field(default_factory=ResultSummary)
     lifecycle: tuple[LifecycleEvent, ...] = ()
     current_action: str | None = None

@@ -14,12 +14,16 @@ by mistake.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from hyperloom.common.coerce import to_unix
+from hyperloom.inference_optimizer.protocol.action_surfaces import ACTION_CATALOGUE
 from hyperloom.inference_optimizer.session.paths import db_path_for
 
+from ..model import RunningTaskSummary
 from ..readonly import fetchall, readonly_connection
 from .base import SourceResult
 
@@ -36,6 +40,64 @@ RAY_OBS_ID_BASE = 100000
 
 # Task states, mirroring the CHECK constraint on ``tasks.state``.
 TASK_STATES = ("queued", "running", "succeeded", "failed", "cancelled")
+RUNNING_TASK_KINDS = tuple(sorted(ACTION_CATALOGUE)) + ("other",)
+
+
+def _running_task(row: Any) -> dict[str, Any]:
+    """Read state transitions and real progress, never lease/DB write times."""
+    try:
+        history = json.loads(row["history"])
+    except (TypeError, json.JSONDecodeError):
+        history = []
+    if not isinstance(history, list):
+        history = []
+    started_at = None
+    progress_at = None
+    started_unix = None
+    progress_unix = None
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        timestamp = to_unix(entry["ts"]) if isinstance(entry.get("ts"), str) else None
+        if timestamp is None:
+            continue
+        if entry.get("to") == "running":
+            started_at, started_unix = entry["ts"], timestamp
+            progress_at, progress_unix = None, None
+        elif isinstance(entry.get("progress"), dict):
+            if progress_unix is None or timestamp > progress_unix:
+                progress_at, progress_unix = entry["ts"], timestamp
+    return {
+        "task_id": str(row["task_id"]),
+        "kind": str(row["kind"]),
+        "state": str(row["state"]),
+        "updated_at": row["updated_at"],
+        "started_at": started_at,
+        "started_unix": started_unix,
+        "progress_at": progress_at,
+        "progress_unix": progress_unix,
+    }
+
+
+def _summarize_running(rows: list[dict[str, Any]]) -> tuple[RunningTaskSummary, ...]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        kind = row["kind"] if row["kind"] in ACTION_CATALOGUE else "other"
+        grouped.setdefault(kind, []).append(row)
+    summaries = []
+    for kind in RUNNING_TASK_KINDS:
+        tasks = grouped.get(kind, [])
+        starts = [row["started_unix"] for row in tasks if row["started_unix"] is not None]
+        progress = [row["progress_unix"] for row in tasks if row["progress_unix"] is not None]
+        summaries.append(
+            RunningTaskSummary(
+                kind=kind,
+                count=len(tasks),
+                oldest_started_unix=min(starts) if starts else None,
+                latest_progress_unix=max(progress) if progress else None,
+            )
+        )
+    return tuple(summaries)
 
 
 def _is_expired(expires_at: Any, *, now_unix: float) -> bool:
@@ -85,8 +147,8 @@ class CoordinatorDbSource:
             now_unix: Current time, used to classify lease expiry.
 
         Returns:
-            :class:`~.base.SourceResult` carrying ``{"task_counts",
-            "running_tasks", "lanes", "gpu_leases"}``.
+            :class:`~.base.SourceResult` carrying task counts, bounded-kind
+            running-task summaries, the detailed task list, lanes and GPU leases.
         """
         db_path = db_path_for(Path(session_dir))
         if not db_path.is_file():
@@ -105,19 +167,14 @@ class CoordinatorDbSource:
                     counts[state] = int(row["n"])
 
             running = [
-                {
-                    "task_id": str(row["task_id"]),
-                    "kind": str(row["kind"]),
-                    "state": str(row["state"]),
-                    "updated_at": row["updated_at"],
-                }
+                _running_task(row)
                 for row in fetchall(
                     conn,
-                    "SELECT task_id, kind, state, updated_at FROM tasks "
-                    "WHERE state = 'running' ORDER BY updated_at DESC LIMIT ?",
-                    (self._running_task_limit,),
+                    "SELECT task_id, kind, state, updated_at, history FROM tasks "
+                    "WHERE state = 'running' ORDER BY updated_at DESC, task_id",
                 )
             ]
+            summaries = _summarize_running(running)
 
             capacities = {
                 str(row["lane"]): int(row["capacity"])
@@ -159,7 +216,8 @@ class CoordinatorDbSource:
         return SourceResult.hit(
             {
                 "task_counts": counts,
-                "running_tasks": running,
+                "running_tasks": running[: max(0, self._running_task_limit)],
+                "running_task_summaries": summaries,
                 "lanes": lanes,
                 "gpu_leases": gpu_leases,
             }

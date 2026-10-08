@@ -152,6 +152,8 @@ def to_dict(snapshot: Snapshot) -> dict[str, Any]:
                     "kind": task.kind,
                     "state": task.state,
                     "updated_at": task.updated_at,
+                    "started_at": task.started_at,
+                    "progress_at": task.progress_at,
                 }
                 for task in snapshot.running_tasks
             ],

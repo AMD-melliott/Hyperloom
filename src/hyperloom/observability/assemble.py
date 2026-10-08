@@ -588,6 +588,7 @@ def load_snapshot(
 
     db_data: dict[str, Any] = db_res.data if db_res.ok else {}
     counts_raw: dict[str, int] = db_data.get("task_counts", {}) or {}
+    task_summaries = tuple(db_data.get("running_task_summaries", ()))
 
     result = _build_result(state)
     liveness = _derive_liveness(
@@ -656,9 +657,12 @@ def load_snapshot(
                 kind=str(row["kind"]),
                 state=str(row["state"]),
                 updated_at=row.get("updated_at"),
+                started_at=row.get("started_at"),
+                progress_at=row.get("progress_at"),
             )
             for row in db_data.get("running_tasks", []) or []
         ),
+        running_task_summaries=task_summaries,
         result=result,
         lifecycle=_build_lifecycle(state, limit=lifecycle_limit),
         current_action=(state.get("current_action") or None),

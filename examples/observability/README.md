@@ -24,6 +24,20 @@ Run it by hand against any session (for example a finished one):
 python -m hyperloom.observability.exporter --session-dir <session> --listen 127.0.0.1:9477
 ```
 
+## Running work
+
+The dashboard shows running tasks by action (`kind`, such as `baseline`,
+`explore`, `roofline`, or `conc_sweep`):
+
+| Metric | Meaning |
+|---|---|
+| `hyperloom_running_tasks{kind="…"}` | Number of running tasks for that action |
+| `hyperloom_running_task_elapsed_seconds{kind="…"}` | Age of the oldest running task for that action |
+| `hyperloom_running_task_progress_age_seconds{kind="…"}` | Age of the freshest timestamped progress for running tasks of that action; absent until progress is published |
+
+Task IDs and progress messages are not metric labels. Unknown action kinds are
+aggregated as `other`, so repeated tasks do not create new series.
+
 ## Local stack (Docker Compose)
 
 ```bash

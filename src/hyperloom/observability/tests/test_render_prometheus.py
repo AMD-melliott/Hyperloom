@@ -23,6 +23,9 @@ from hyperloom.observability.render.prometheus import (
     format_value,
     render_prometheus,
 )
+from hyperloom.observability.sources.coordinator_db import CoordinatorDbSource, RUNNING_TASK_KINDS
+
+from .conftest import FROZEN_NOW, write_coordinator_db, write_state
 
 
 def test_escape_label_value() -> None:
@@ -75,6 +78,9 @@ PINNED_METRIC_NAMES = frozenset(
         "hyperloom_phase_budget_remaining_seconds",
         "hyperloom_phase_cap_seconds",
         "hyperloom_tasks",
+        "hyperloom_running_tasks",
+        "hyperloom_running_task_elapsed_seconds",
+        "hyperloom_running_task_progress_age_seconds",
         "hyperloom_lane_held",
         "hyperloom_lane_capacity",
         "hyperloom_gpu_leased",
@@ -178,6 +184,10 @@ def full_snapshot(snapshot):
         snapshot,
         liveness=Liveness.LIVE,
         last_activity_age_s=5.0,
+        running_task_summaries=tuple(
+            dataclasses.replace(row, latest_progress_unix=snapshot.observed_at_unix - 5.0) if row.count else row
+            for row in snapshot.running_task_summaries
+        ),
         current_step=CurrentStep(
             phase="KERNEL_AGENT",
             step="geak_e2e",
@@ -266,6 +276,48 @@ def test_labels_stay_inside_the_allow_list(full_snapshot) -> None:
         if name == "hyperloom_liveness":
             assert labels["state"] in {"live", "stale", "dead", "unknown"}
     assert not any("detail" in labels or "holder" in labels for _, labels, _ in samples)
+
+
+def test_running_task_metrics_cover_all_rows_with_bounded_action_labels(tmp_path: Path) -> None:
+    sd = tmp_path / "tasks"
+    write_state(sd)
+    tasks = [(f"arbitrary-task-{index}", "baseline", "running") for index in range(15)]
+    tasks += [("secret-task-a", "custom-candidate-a", "running"), ("secret-task-b", "custom-candidate-b", "running")]
+    write_coordinator_db(
+        sd,
+        tasks=tasks,
+        task_history={
+            "arbitrary-task-0": [
+                {"to": "running", "ts": "2026-08-06T02:00:00Z"},
+                {"progress": {"label": "opaque-candidate", "unit": "baseline_round"}, "ts": "2026-08-06T03:59:55Z"},
+            ]
+        },
+    )
+    snapshot = load_snapshot(sd, now_unix=lambda: FROZEN_NOW)
+    assert snapshot is not None
+    assert len(snapshot.running_tasks) == 12
+    limited = CoordinatorDbSource(running_task_limit=0).read(sd, now_unix=FROZEN_NOW)
+    assert limited.data["running_tasks"] == []
+    assert limited.data["running_task_summaries"] == snapshot.running_task_summaries
+    text = render_prometheus(snapshot, exporter=EXPORTER)
+    _, samples = parse_exposition(text)
+    assert value_of(samples, "hyperloom_running_tasks", kind="baseline") == 15
+    assert value_of(samples, "hyperloom_running_tasks", kind="other") == 2
+    assert value_of(samples, "hyperloom_running_tasks", kind="conc_sweep") == 0
+    assert value_of(samples, "hyperloom_running_task_elapsed_seconds", kind="baseline") == 7200
+    assert value_of(samples, "hyperloom_running_task_progress_age_seconds", kind="baseline") == 5
+    assert not any(
+        n == "hyperloom_running_task_progress_age_seconds" and lab["kind"] == "other" for n, lab, _ in samples
+    )
+    task_samples = [(n, lab) for n, lab, _ in samples if n.startswith("hyperloom_running_task")]
+    assert all(set(lab) == {"session_id", "model", "framework", "kind"} for _, lab in task_samples)
+    assert all(lab["kind"] in RUNNING_TASK_KINDS for _, lab in task_samples)
+    assert len({(n, tuple(sorted(lab.items()))) for n, lab in task_samples}) == len(task_samples)
+    assert not any(value in text for value in ("arbitrary-task", "secret-task", "custom-candidate", "opaque-candidate"))
+    advanced = dataclasses.replace(snapshot, rendered_at_unix=FROZEN_NOW + 30)
+    _, advanced_samples = parse_exposition(render_prometheus(advanced, exporter=EXPORTER))
+    assert value_of(advanced_samples, "hyperloom_running_task_elapsed_seconds", kind="baseline") == 7230
+    assert value_of(advanced_samples, "hyperloom_running_task_progress_age_seconds", kind="baseline") == 35
 
 
 def test_label_values_are_escaped(snapshot) -> None:

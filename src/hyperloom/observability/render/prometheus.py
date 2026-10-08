@@ -167,6 +167,20 @@ def _work_families(s: Snapshot) -> list[MetricFamily]:
     tasks = _gauge("hyperloom_tasks", "Coordinator tasks by state.")
     for state in TASK_STATES:
         tasks.add(getattr(s.tasks, state), state=state)
+    running = _gauge("hyperloom_running_tasks", "Running coordinator tasks by bounded action kind.")
+    elapsed = _gauge(
+        "hyperloom_running_task_elapsed_seconds", "Seconds since the oldest running task started, by kind."
+    )
+    progress = _gauge(
+        "hyperloom_running_task_progress_age_seconds", "Seconds since the freshest running-task progress note, by kind."
+    )
+    now = s.rendered_at_unix or s.observed_at_unix
+    for summary in s.running_task_summaries:
+        running.add(summary.count, kind=summary.kind)
+        if summary.oldest_started_unix is not None:
+            elapsed.add(max(0.0, now - summary.oldest_started_unix), kind=summary.kind)
+        if summary.latest_progress_unix is not None:
+            progress.add(max(0.0, now - summary.latest_progress_unix), kind=summary.kind)
     held = _gauge("hyperloom_lane_held", "Leases held on each resource lane.")
     capacity = _gauge("hyperloom_lane_capacity", "Capacity of each resource lane.")
     for lane in s.lanes:
@@ -175,7 +189,7 @@ def _work_families(s: Snapshot) -> list[MetricFamily]:
     leased = _gauge("hyperloom_gpu_leased", "1 when a GPU holds an unexpired lease.")
     for lease in s.gpu_leases:
         leased.add(0 if lease.expired else 1, gpu_id=lease.gpu_id)
-    return [tasks, held, capacity, leased]
+    return [tasks, running, elapsed, progress, held, capacity, leased]
 
 
 def _step_families(s: Snapshot) -> list[MetricFamily]:

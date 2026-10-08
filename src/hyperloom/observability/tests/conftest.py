@@ -249,6 +249,7 @@ def write_coordinator_db(
     session_dir: Path,
     *,
     tasks: list[tuple[str, str, str]] | None = None,
+    task_history: dict[str, list[dict]] | None = None,
     leases: list[tuple[str, str, str]] | None = None,
     gpu_leases: list[tuple[int, str, str]] | None = None,
     lane_capacity: dict[str, int] | None = None,
@@ -261,6 +262,7 @@ def write_coordinator_db(
     Args:
         session_dir: Session root.
         tasks: ``(task_id, kind, state)`` rows.
+        task_history: Optional persisted history overrides keyed by task ID.
         leases: ``(lane, holder_id, expires_at)`` rows.
         gpu_leases: ``(gpu_id, holder_id, expires_at)`` rows.
         lane_capacity: Lane to capacity.
@@ -275,7 +277,8 @@ def write_coordinator_db(
     try:
         conn.executescript(
             """
-            CREATE TABLE tasks (task_id TEXT PRIMARY KEY, kind TEXT, state TEXT, updated_at TEXT);
+            CREATE TABLE tasks (task_id TEXT PRIMARY KEY, kind TEXT, state TEXT, updated_at TEXT,
+                                history TEXT NOT NULL DEFAULT '[]');
             CREATE TABLE leases (lane TEXT, holder_id TEXT, task_id TEXT, action TEXT,
                                  pid INTEGER, acquired_at TEXT, expires_at TEXT, heartbeat_at TEXT);
             CREATE TABLE lane_capacity (lane TEXT PRIMARY KEY, capacity INTEGER);
@@ -285,8 +288,18 @@ def write_coordinator_db(
         )
         for task_id, kind, state in tasks or []:
             conn.execute(
-                "INSERT INTO tasks(task_id, kind, state, updated_at) VALUES (?, ?, ?, ?)",
-                (task_id, kind, state, "2026-08-06T03:00:00+00:00"),
+                "INSERT INTO tasks(task_id, kind, state, updated_at, history) VALUES (?, ?, ?, ?, ?)",
+                (
+                    task_id,
+                    kind,
+                    state,
+                    "2026-08-06T03:00:00+00:00",
+                    json.dumps(
+                        (task_history or {}).get(
+                            task_id, [{"from": "queued", "to": state, "ts": "2026-08-06T03:00:00+00:00"}]
+                        )
+                    ),
+                ),
             )
         for lane, holder, expires in leases or []:
             conn.execute(
