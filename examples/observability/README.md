@@ -64,6 +64,20 @@ docker compose up -d
 # Grafana: http://127.0.0.1:3000  →  Hyperloom / "Hyperloom session"
 ```
 
+## Dashboards
+
+| Dashboard | uid | Use |
+|---|---|---|
+| `dashboards/hyperloom.json` | `hyperloom-session` | One session over time: phase timeline, throughput, budgets, tasks |
+| `dashboards/hyperloom-overview.json` | `hyperloom-overview` | Every run Prometheus still holds: one row per session, plus charts across runs and, for the selected session, what Hyperloom tried |
+
+The overview reads the last value of each series over the dashboard's time
+range (default 60 days), so a run's final result stays visible after its
+exporter has exited. Click a run's start date to open its timeline. Prometheus
+retention bounds how far back it can look. The per-attempt table and the
+accuracy columns fill only for runs recorded after those series were added;
+older runs show no data there.
+
 ## Existing or Kubernetes Prometheus
 
 1. Start the run with `--metrics-listen 0.0.0.0:9477` (or the env var).
@@ -72,7 +86,8 @@ docker compose up -d
 
    ```bash
    kubectl -n monitoring create configmap hyperloom-dashboard \
-     --from-file=hyperloom.json=dashboards/hyperloom.json
+     --from-file=hyperloom.json=dashboards/hyperloom.json \
+     --from-file=hyperloom-overview.json=dashboards/hyperloom-overview.json
    kubectl -n monitoring label configmap hyperloom-dashboard grafana_dashboard=1
    ```
 

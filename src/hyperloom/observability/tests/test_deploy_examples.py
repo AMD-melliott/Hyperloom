@@ -9,6 +9,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from .test_render_prometheus import PINNED_METRIC_NAMES
 
 EXAMPLES = Path(__file__).resolve().parents[4] / "examples" / "observability"
@@ -21,8 +23,9 @@ def _exprs(panel_or_dashboard: dict) -> list[str]:
     return found
 
 
-def test_dashboard_only_uses_real_hyperloom_metrics() -> None:
-    dashboard = json.loads((EXAMPLES / "dashboards" / "hyperloom.json").read_text())
+@pytest.mark.parametrize("name", ["hyperloom.json", "hyperloom-overview.json"])
+def test_dashboard_only_uses_real_hyperloom_metrics(name: str) -> None:
+    dashboard = json.loads((EXAMPLES / "dashboards" / name).read_text())
     exprs = _exprs(dashboard)
     assert exprs, "dashboard has no queries"
     used = {name for expr in exprs for name in re.findall(r"\bhyperloom_[a-z_]+\b", expr)}

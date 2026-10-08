@@ -5,6 +5,7 @@
   "refresh": "15s",
   "time": {"from": "now-6h", "to": "now"},
   "tags": ["hyperloom"],
+  "links": [{"title": "Run overview", "type": "link", "url": "/d/hyperloom-overview/hyperloom-overview", "icon": "dashboard"}],
   "templating": {
     "list": [
       {"name": "datasource", "type": "datasource", "query": "prometheus", "label": "Datasource"},

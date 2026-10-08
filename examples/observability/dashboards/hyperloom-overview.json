@@ -1,0 +1,1448 @@
+{
+  "title": "Hyperloom overview",
+  "uid": "hyperloom-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": {
+    "from": "now-60d",
+    "to": "now"
+  },
+  "tags": [
+    "hyperloom"
+  ],
+  "timezone": "browser",
+  "editable": true,
+  "description": "Runs recorded in Prometheus, one row per Hyperloom session. Drill into a single session on the 'Hyperloom session' dashboard.",
+  "links": [
+    {
+      "title": "Session timeline",
+      "type": "link",
+      "url": "/d/hyperloom-session/hyperloom-session",
+      "icon": "dashboard"
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Datasource"
+      },
+      {
+        "name": "session",
+        "label": "Session",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(hyperloom_session_info, session_id)",
+          "refId": "session"
+        },
+        "definition": "label_values(hyperloom_session_info, session_id)",
+        "refresh": 2,
+        "sort": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Runs",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(last_over_time(hyperloom_session_info[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "time_series",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none"
+      },
+      "description": "Sessions with data in the selected range."
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Best validated gain",
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(max by (session_id) (last_over_time(hyperloom_gain_percent{kind=\"validated\"}[$__range])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "time_series",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Median validated gain",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "quantile(0.5, max by (session_id) (last_over_time(hyperloom_gain_percent{kind=\"validated\"}[$__range])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "time_series",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none"
+      },
+      "description": "Over every session in range, including runs that stopped before a gain was validated (0%)."
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Reached target",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count((topk by (session_id) (1, max by (session_id, reason) (max_over_time(timestamp(hyperloom_stop_info)[$__range:1m])))) * on (session_id, reason) group_left () max by (session_id, reason) (last_over_time(hyperloom_stop_info{reason=\"target_reached\"}[$__range]))) or vector(0)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "time_series",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none"
+      },
+      "description": "Sessions whose latest stop reason in range is target_reached."
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Runs",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 9
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "label_replace(max by (session_id, model, tp, conc, isl, osl, gpu_type) (last_over_time(hyperloom_session_info[$__range])), \"started\", \"$1-$2-$3\", \"session_id\", \".*_(\\\\d{4})(\\\\d{2})(\\\\d{2})T.*\")",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "expr": "max by (session_id) (last_over_time(hyperloom_throughput_baseline[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "expr": "max by (session_id) (last_over_time(hyperloom_throughput_best[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "D",
+          "expr": "max by (session_id) (last_over_time(hyperloom_gain_percent{kind=\"validated\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "E",
+          "expr": "max by (session_id) (last_over_time(hyperloom_accuracy{stage=\"baseline\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "F",
+          "expr": "max by (session_id) (last_over_time(hyperloom_accuracy{stage=\"best\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "G",
+          "expr": "topk by (session_id) (1, max by (session_id, reason) (max_over_time(timestamp(hyperloom_stop_info)[$__range:1m])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "H",
+          "expr": "max by (session_id) (max_over_time(hyperloom_session_elapsed_seconds[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "I",
+          "expr": "max by (session_id) (max_over_time(hyperloom_crashes[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "description": "One row per session, newest first. Click the start date to open its timeline. Throughput is in the session's graded unit (tok/s/GPU for output throughput). Accuracy columns are empty for runs before the accuracy series existed.",
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "session_id",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value #A": true,
+              "Value #G": true,
+              "Time 1": true,
+              "Time 2": true,
+              "session_id 2": true,
+              "Time 3": true,
+              "session_id 3": true,
+              "Time 4": true,
+              "session_id 4": true,
+              "Time 5": true,
+              "session_id 5": true,
+              "Time 6": true,
+              "session_id 6": true,
+              "Time 7": true,
+              "session_id 7": true,
+              "Time 8": true,
+              "session_id 8": true,
+              "Time 9": true,
+              "session_id 9": true
+            },
+            "renameByName": {
+              "Value #B": "Baseline",
+              "Value #C": "Best",
+              "Value #D": "Gain %",
+              "Value #E": "Acc (base)",
+              "Value #F": "Acc (best)",
+              "Value #H": "Elapsed",
+              "Value #I": "Crashes",
+              "reason": "Stop reason",
+              "model": "Model",
+              "tp": "TP",
+              "conc": "Conc",
+              "isl": "ISL",
+              "osl": "OSL",
+              "gpu_type": "GPU",
+              "session_id": "Session",
+              "started": "Started"
+            },
+            "indexByName": {
+              "started": 0,
+              "model": 1,
+              "gpu_type": 2,
+              "tp": 3,
+              "conc": 4,
+              "isl": 5,
+              "osl": 6,
+              "Value #B": 7,
+              "Value #C": 8,
+              "Value #D": 9,
+              "Value #E": 10,
+              "Value #F": 11,
+              "reason": 12,
+              "Value #H": 13,
+              "Value #I": 14,
+              "session_id": 15
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Started",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Gain %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 1
+                    },
+                    {
+                      "color": "green",
+                      "value": 30
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Baseline"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Best"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "Acc.*"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Elapsed"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Session"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Started"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 115
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Model"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 200
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GPU"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 45
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Conc"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 65
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ISL"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "OSL"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Baseline"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Best"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Gain %"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Acc (base)"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Acc (best)"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Stop reason"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 230
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Elapsed"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 85
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Crashes"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Started"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open session timeline",
+                    "url": "/d/hyperloom-session/hyperloom-session?var-session=${__data.fields.Session}&var-datasource=${datasource}&${__url_time_range}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 6,
+      "type": "barchart",
+      "title": "Validated gain by run",
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 8,
+        "h": 9
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "label_join(label_replace(label_replace((max by (session_id) (last_over_time(hyperloom_gain_percent{kind=\"validated\"}[$__range]))) * on (session_id) group_left (model, conc) (max by (session_id, model, conc) (last_over_time(hyperloom_session_info[$__range]))), \"name\", \"$1\", \"model\", \".*/(.*)\"), \"day\", \"$1\", \"session_id\", \".*_(\\\\d{8})T.*\"), \"run\", \" \", \"name\", \"conc\", \"day\")",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "run",
+                "Value"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "Value": "Gain %"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "xField": "run",
+        "orientation": "auto",
+        "stacking": "none",
+        "xTickLabelRotation": -30,
+        "showValue": "auto",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "description": "Validated gain over baseline at the end of each run (or its latest value)."
+    },
+    {
+      "id": 7,
+      "type": "barchart",
+      "title": "Baseline vs best throughput",
+      "gridPos": {
+        "x": 8,
+        "y": 13,
+        "w": 8,
+        "h": 9
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "label_join(label_replace(label_replace((max by (session_id) (last_over_time(hyperloom_throughput_baseline[$__range]))) * on (session_id) group_left (model, conc) (max by (session_id, model, conc) (last_over_time(hyperloom_session_info[$__range]))), \"name\", \"$1\", \"model\", \".*/(.*)\"), \"day\", \"$1\", \"session_id\", \".*_(\\\\d{8})T.*\"), \"run\", \" \", \"name\", \"conc\", \"day\")",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "expr": "label_join(label_replace(label_replace((max by (session_id) (last_over_time(hyperloom_throughput_best[$__range]))) * on (session_id) group_left (model, conc) (max by (session_id, model, conc) (last_over_time(hyperloom_session_info[$__range]))), \"name\", \"$1\", \"model\", \".*/(.*)\"), \"day\", \"$1\", \"session_id\", \".*_(\\\\d{8})T.*\"), \"run\", \" \", \"name\", \"conc\", \"day\")",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "run",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "run",
+                "Value #A",
+                "Value #B"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "Value #A": "Baseline",
+              "Value #B": "Best"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 1,
+            "scaleDistribution": {
+              "type": "log",
+              "log": 10
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "xField": "run",
+        "orientation": "auto",
+        "stacking": "none",
+        "xTickLabelRotation": -30,
+        "showValue": "auto",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "description": "Log scale: runs use different models and workloads, so absolute throughput varies by orders of magnitude."
+    },
+    {
+      "id": 8,
+      "type": "barchart",
+      "title": "Time per phase (hours)",
+      "gridPos": {
+        "x": 16,
+        "y": 13,
+        "w": 8,
+        "h": 9
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "label_join(label_replace(label_replace((max by (session_id) (max_over_time(hyperloom_phase_elapsed_seconds{phase=\"PRELUDE\"}[$__range])) / 3600) * on (session_id) group_left (model, conc) (max by (session_id, model, conc) (last_over_time(hyperloom_session_info[$__range]))), \"name\", \"$1\", \"model\", \".*/(.*)\"), \"day\", \"$1\", \"session_id\", \".*_(\\\\d{8})T.*\"), \"run\", \" \", \"name\", \"conc\", \"day\")",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "expr": "label_join(label_replace(label_replace((max by (session_id) (max_over_time(hyperloom_phase_elapsed_seconds{phase=\"ENABLEMENT\"}[$__range])) / 3600) * on (session_id) group_left (model, conc) (max by (session_id, model, conc) (last_over_time(hyperloom_session_info[$__range]))), \"name\", \"$1\", \"model\", \".*/(.*)\"), \"day\", \"$1\", \"session_id\", \".*_(\\\\d{8})T.*\"), \"run\", \" \", \"name\", \"conc\", \"day\")",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "expr": "label_join(label_replace(label_replace((max by (session_id) (max_over_time(hyperloom_phase_elapsed_seconds{phase=\"FRAMEWORK_AGENT\"}[$__range])) / 3600) * on (session_id) group_left (model, conc) (max by (session_id, model, conc) (last_over_time(hyperloom_session_info[$__range]))), \"name\", \"$1\", \"model\", \".*/(.*)\"), \"day\", \"$1\", \"session_id\", \".*_(\\\\d{8})T.*\"), \"run\", \" \", \"name\", \"conc\", \"day\")",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "D",
+          "expr": "label_join(label_replace(label_replace((max by (session_id) (max_over_time(hyperloom_phase_elapsed_seconds{phase=\"KERNEL_AGENT\"}[$__range])) / 3600) * on (session_id) group_left (model, conc) (max by (session_id, model, conc) (last_over_time(hyperloom_session_info[$__range]))), \"name\", \"$1\", \"model\", \".*/(.*)\"), \"day\", \"$1\", \"session_id\", \".*_(\\\\d{8})T.*\"), \"run\", \" \", \"name\", \"conc\", \"day\")",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "E",
+          "expr": "label_join(label_replace(label_replace((max by (session_id) (max_over_time(hyperloom_phase_elapsed_seconds{phase=\"SWEEP\"}[$__range])) / 3600) * on (session_id) group_left (model, conc) (max by (session_id, model, conc) (last_over_time(hyperloom_session_info[$__range]))), \"name\", \"$1\", \"model\", \".*/(.*)\"), \"day\", \"$1\", \"session_id\", \".*_(\\\\d{8})T.*\"), \"run\", \" \", \"name\", \"conc\", \"day\")",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "F",
+          "expr": "label_join(label_replace(label_replace((max by (session_id) (max_over_time(hyperloom_phase_elapsed_seconds{phase=\"CLOSE\"}[$__range])) / 3600) * on (session_id) group_left (model, conc) (max by (session_id, model, conc) (last_over_time(hyperloom_session_info[$__range]))), \"name\", \"$1\", \"model\", \".*/(.*)\"), \"day\", \"$1\", \"session_id\", \".*_(\\\\d{8})T.*\"), \"run\", \" \", \"name\", \"conc\", \"day\")",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "run",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "pattern": "^(run|Value #.*)$"
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "Value #A": "PRELUDE",
+              "Value #B": "ENABLEMENT",
+              "Value #C": "FRAMEWORK_AGENT",
+              "Value #D": "KERNEL_AGENT",
+              "Value #E": "SWEEP",
+              "Value #F": "CLOSE"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "h",
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "xField": "run",
+        "orientation": "auto",
+        "stacking": "normal",
+        "xTickLabelRotation": -30,
+        "showValue": "auto",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "description": "Cumulative time charged to each phase, as reported by the optimizer."
+    },
+    {
+      "id": 9,
+      "type": "row",
+      "title": "What Hyperloom found: $session",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Baseline",
+      "gridPos": {
+        "x": 0,
+        "y": 23,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(last_over_time(hyperloom_throughput_baseline{session_id=\"$session\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "time_series",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Best",
+      "gridPos": {
+        "x": 6,
+        "y": 23,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(last_over_time(hyperloom_throughput_best{session_id=\"$session\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "time_series",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Validated gain",
+      "gridPos": {
+        "x": 12,
+        "y": 23,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(last_over_time(hyperloom_gain_percent{session_id=\"$session\",kind=\"validated\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "time_series",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Accuracy (baseline \u2192 best)",
+      "gridPos": {
+        "x": 18,
+        "y": 23,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (stage) (last_over_time(hyperloom_accuracy{session_id=\"$session\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "{{stage}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none"
+      },
+      "description": "Both stages are shown; the series exists only for runs after the accuracy metric was added."
+    },
+    {
+      "id": 14,
+      "type": "table",
+      "title": "Attempts (KEEP and REVERT)",
+      "gridPos": {
+        "x": 0,
+        "y": 27,
+        "w": 24,
+        "h": 9
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (ordinal, phase, kind, lever, outcome) (last_over_time(hyperloom_optimization_info{session_id=\"$session\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "expr": "max by (ordinal) (last_over_time(hyperloom_optimization_throughput{session_id=\"$session\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "expr": "max by (ordinal) (last_over_time(hyperloom_optimization_gain_percent{session_id=\"$session\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "D",
+          "expr": "max by (ordinal) (last_over_time(hyperloom_optimization_accuracy{session_id=\"$session\"}[$__range]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "description": "One row per measured KEEP or any REVERT, newest 100, from the optimization journal. Empty for runs recorded before per-attempt series were exported.",
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "ordinal",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value #A": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Time 4": true,
+              "Time 5": true,
+              "Time 6": true,
+              "Time 7": true,
+              "Time 8": true,
+              "Time 9": true,
+              "ordinal 2": true,
+              "ordinal 3": true,
+              "ordinal 4": true,
+              "ordinal 5": true,
+              "ordinal 6": true,
+              "ordinal 7": true,
+              "ordinal 8": true,
+              "ordinal 9": true
+            },
+            "renameByName": {
+              "ordinal": "#",
+              "phase": "Phase",
+              "kind": "Kind",
+              "lever": "Lever",
+              "outcome": "Outcome",
+              "Value #B": "Throughput",
+              "Value #C": "Gain %",
+              "Value #D": "Accuracy"
+            },
+            "indexByName": {
+              "#": 0,
+              "Phase": 1,
+              "Kind": 2,
+              "Lever": 3,
+              "Outcome": 4,
+              "Throughput": 5,
+              "Gain %": 6,
+              "Accuracy": 7
+            }
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "#",
+                "destinationType": "number"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "#"
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Gain %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Throughput"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Accuracy"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 4
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Outcome"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "KEEP": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "REVERT": {
+                        "color": "red",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    }
+  ]
+}
