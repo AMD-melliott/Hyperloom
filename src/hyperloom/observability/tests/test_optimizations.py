@@ -58,6 +58,47 @@ def test_accuracy_is_joined_from_the_adopted_stack_by_task(session_dir: Path, fr
     assert snap.result.best_accuracy == 0.9727
 
 
+
+BATCH = [
+    _row("--speculative-config", "KEEP", kind="param", gain_pct=46.8, task_id="batch", fingerprint="fa"),
+    _row("env: AITER", "REVERT", kind="env", reason="gain_below_threshold", task_id="batch", fingerprint="fb"),
+    _row("env: AITER qknorm", "KEEP", kind="env", gain_pct=2.57, task_id="batch", fingerprint="fc"),
+]
+BATCH_STACK = [
+    {"task_id": "batch", "fingerprint": "fa", "accuracy": 0.97346, "tput": 755.06},
+    {"task_id": "batch", "fingerprint": "fc", "accuracy": 0.97271, "tput": 774.45},
+]
+
+
+def test_accuracy_of_a_batch_is_joined_by_fingerprint_not_by_the_shared_task(session_dir: Path, frozen_clock) -> None:
+    write_journal(session_dir, BATCH)
+    snap = _snapshot(session_dir, frozen_clock, optimization_stack=BATCH_STACK)
+    assert [(r.lever, r.accuracy) for r in snap.optimizations] == [
+        ("--speculative-config", 0.97346),
+        ("env: AITER", None),
+        ("env: AITER qknorm", 0.97271),
+    ]
+
+
+def test_throughput_falls_back_to_the_adopted_stack_when_the_journal_has_none(session_dir: Path, frozen_clock) -> None:
+    write_journal(session_dir, BATCH)
+    snap = _snapshot(session_dir, frozen_clock, optimization_stack=BATCH_STACK)
+    assert [r.tput for r in snap.optimizations] == [755.06, None, 774.45]
+
+
+def test_journal_throughput_wins_over_the_stack(session_dir: Path, frozen_clock) -> None:
+    write_journal(session_dir, [_row("x", "KEEP", gain_pct=1.0, throughput_after=900.0, task_id="t", fingerprint="fa")])
+    stack = [{"task_id": "t", "fingerprint": "fa", "accuracy": 0.9, "tput": 800.0}]
+    assert _snapshot(session_dir, frozen_clock, optimization_stack=stack).optimizations[0].tput == 900.0
+
+
+def test_a_shared_task_without_a_fingerprint_is_not_guessed(session_dir: Path, frozen_clock) -> None:
+    write_journal(session_dir, [_row("x", "KEEP", gain_pct=1.0, task_id="batch")])
+    snap = _snapshot(session_dir, frozen_clock, optimization_stack=BATCH_STACK)
+    assert snap.optimizations[0].accuracy is None
+    assert snap.optimizations[0].tput is None
+
+
 def test_accuracy_is_absent_when_nothing_recorded_it(session_dir: Path, frozen_clock) -> None:
     snap = _snapshot(session_dir, frozen_clock)
     assert snap.result.baseline_accuracy is None

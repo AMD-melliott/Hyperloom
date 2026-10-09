@@ -433,24 +433,56 @@ MAX_OPTIMIZATION_ROWS = 100
 MAX_LEVER_LABEL_CHARS = 160
 
 
+def _stack_lookup(state: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Index the adopted stack by fingerprint and by task id.
+
+    A batch of candidates shares one ``task_id``, so the task index holds only
+    ids that name exactly one stack entry; anything else would hand one
+    entry's numbers to its siblings.
+    """
+    by_fingerprint: dict[str, dict[str, Any]] = {}
+    by_task: dict[str, dict[str, Any]] = {}
+    shared_tasks: set[str] = set()
+    for entry in _optimization_stack(state):
+        fingerprint = str(entry.get("fingerprint") or "")
+        if fingerprint:
+            by_fingerprint[fingerprint] = entry
+        task_id = str(entry.get("task_id") or "")
+        if not task_id:
+            continue
+        if task_id in by_task:
+            shared_tasks.add(task_id)
+        by_task[task_id] = entry
+    for task_id in shared_tasks:
+        del by_task[task_id]
+    return by_fingerprint, by_task
+
+
 def _build_optimizations(rows: list[dict[str, Any]], state: dict[str, Any]) -> tuple[OptimizationRecord, ...]:
-    """Select the journal decisions worth showing and join accuracy from the adopted stack.
+    """Select the journal decisions worth showing and join accuracy and throughput from the adopted stack.
 
     Baseline rows are excluded (they are the reference, exported as
     ``throughput_baseline``). A KEEP with no measurement is bookkeeping, such as
     target analysis or a specialist round; a REVERT is kept even unmeasured
     because "tried and failed" is the point of the table.
+
+    The journal rows of a batch share one ``task_id``, so each row is matched to
+    its stack entry by ``fingerprint``; ``task_id`` is the fallback for rows
+    that carry no fingerprint, and only when it names a single entry. The
+    journal does not record the measured throughput of a candidate, the stack does.
     """
-    accuracy_by_task = {
-        str(entry.get("task_id")): to_float(entry.get("accuracy")) for entry in _optimization_stack(state)
-    }
+    by_fingerprint, by_task = _stack_lookup(state)
     records: list[OptimizationRecord] = []
     for ordinal, row in enumerate(rows):
         outcome = str(row.get("outcome") or "")
         gain = to_float(row.get("gain_pct"))
-        tput = to_float(row.get("throughput_after"))
         if row.get("kind") == "baseline" or outcome not in ("KEEP", "REVERT"):
             continue
+        fingerprint = str(row.get("fingerprint") or "")
+        entry = by_fingerprint.get(fingerprint) if fingerprint else by_task.get(str(row.get("task_id")))
+        tput = to_float(row.get("throughput_after"))
+        if tput is None and entry is not None:
+            tput = to_float(entry.get("tput"))
         if outcome == "KEEP" and gain is None and tput is None:
             continue
         records.append(
@@ -462,7 +494,7 @@ def _build_optimizations(rows: list[dict[str, Any]], state: dict[str, Any]) -> t
                 outcome=outcome,
                 gain_pct=gain,
                 tput=tput,
-                accuracy=accuracy_by_task.get(str(row.get("task_id"))),
+                accuracy=to_float(entry.get("accuracy")) if entry is not None else None,
             )
         )
     return tuple(records[-MAX_OPTIMIZATION_ROWS:])

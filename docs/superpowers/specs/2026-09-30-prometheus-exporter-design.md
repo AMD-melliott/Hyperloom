@@ -142,9 +142,9 @@ is not exported.
 | `hyperloom_stop_info` | gauge (=1) | `reason` | `stop_reason`, only once set |
 | `hyperloom_accuracy` | gauge | `stage` = baseline/best | `baseline_accuracy`, accuracy of the last adopted stack entry |
 | `hyperloom_optimization_info` | gauge (=1) | `ordinal`, `phase`, `kind`, `lever`, `outcome` | one row per journal KEEP (measured) or REVERT, newest 100 |
-| `hyperloom_optimization_throughput` | gauge | `ordinal` | journal `throughput_after` |
+| `hyperloom_optimization_throughput` | gauge | `ordinal` | journal `throughput_after`, else `optimization_stack[].tput` |
 | `hyperloom_optimization_gain_percent` | gauge | `ordinal` | journal `gain_pct` |
-| `hyperloom_optimization_accuracy` | gauge | `ordinal` | `optimization_stack[].accuracy`, joined by task |
+| `hyperloom_optimization_accuracy` | gauge | `ordinal` | `optimization_stack[].accuracy`, joined by fingerprint (a batch shares one task id) |
 
 The optimization rows come from `reports/optimization_journal.json`, the only
 artifact that records reverted attempts. `ordinal` is the row's journal position,
