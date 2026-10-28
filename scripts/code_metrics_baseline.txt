@@ -315,9 +315,8 @@ function-lines src/hyperloom/orchestrator/kernel/kernel_decisions.py::enqueue_no
 function-lines src/hyperloom/orchestrator/kernel/kernel_decisions.py::record_kernel_integrate_result 80
 function-lines src/hyperloom/orchestrator/kernel/request_handlers.py::integrate_handler 107
 function-lines src/hyperloom/orchestrator/knowledge/recipe_journal.py::RecipeJournalCollaborator._publish_remote_recipe 60
-function-lines src/hyperloom/orchestrator/knowledge/recipe_journal.py::RecipeJournalCollaborator._record_fact_impl 55
-function-lines src/hyperloom/orchestrator/knowledge/recipe_journal.py::RecipeJournalCollaborator._record_fact_per_task 51
-function-lines src/hyperloom/orchestrator/knowledge/recipe_journal.py::RecipeJournalCollaborator._record_fact_per_variant 60
+function-lines src/hyperloom/orchestrator/knowledge/recipe_journal.py::RecipeJournalCollaborator._record_fact_impl 53
+function-lines src/hyperloom/orchestrator/knowledge/recipe_journal.py::RecipeJournalCollaborator._record_fact_per_variant 56
 function-lines src/hyperloom/orchestrator/knowledge/recipe_journal.py::RecipeJournalCollaborator._record_remote_recipe_audit 51
 function-lines src/hyperloom/orchestrator/knowledge/recipe_kb/dispatcher.py::RecipeKB.put_recipe 63
 function-lines src/hyperloom/orchestrator/knowledge/recipe_kb/local_store.py::LocalRecipeStore.put_recipe 62
@@ -628,7 +627,7 @@ module-lines src/hyperloom/orchestrator/actions/executors/report.py 1335
 module-lines src/hyperloom/orchestrator/actions/executors/roofline.py 1306
 module-lines src/hyperloom/orchestrator/kernel/apply_kernel_patch.py 2644
 module-lines src/hyperloom/orchestrator/kernel/conc_sweep.py 1449
-module-lines src/hyperloom/orchestrator/knowledge/recipe_journal.py 1268
+module-lines src/hyperloom/orchestrator/knowledge/recipe_journal.py 1226
 module-lines src/hyperloom/orchestrator/loop/coordinator.py 1332
 module-lines src/hyperloom/orchestrator/loop/dispatcher.py 1428
 module-lines src/hyperloom/orchestrator/loop/intent_router.py 1358
